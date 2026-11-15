@@ -2,7 +2,8 @@
 //! arka plan uygulaması. İş parçacıkları: UI (mesaj döngüsü, tepsi, eylemler, sahneler), dinleyici,
 //! ayar dosyası izleyicisi ve (yalnız efekt oynarken) efekt motoru.
 //!
-//! `--studyo`: aynı exe ayar penceresini (Stüdyo) ayrı bir süreç olarak açar.
+//! `--studyo`: aynı exe ayar penceresini (Stüdyo) ayrı bir süreç olarak açar. `--palet`: komut
+//! paletini ayrı bir süreç olarak açar (tek örnek; açıksa öne getirilir).
 //! `--surum`: sürümü yazdırıp çıkar. `--guncelle-uygula --hedef <klasör> --bekle <pid>`: indirilen
 //! yeni sürümün exe'si olarak kurulum klasörünü günceller (yalnız onaylı kurulumda başlatılır).
 //! Kurulmamış bir yerden (açılmış sürüm zip'i) argümansız açılınca kurulum sihirbazı gösterilir.
@@ -16,10 +17,13 @@ mod guncelleme;
 mod gunluk;
 mod ipc;
 mod izleyici;
+mod kisayollar;
 mod sahne_akisi;
 mod sistem;
 mod tepsi;
+mod tus_penceresi;
 mod yollar;
+mod zamanlayici;
 
 use std::path::{Path, PathBuf};
 
@@ -39,6 +43,8 @@ struct Secenekler {
     sozluk_denetle: bool,
     /// Ayar penceresini aç (ayrı süreç kipi).
     studyo: bool,
+    /// Komut paletini aç (ayrı süreç kipi).
+    palet: bool,
     ayar: Option<PathBuf>,
     /// Yalnız `--sozluk-denetle` iç kipinde: denetlenecek model klasörü.
     model: Option<String>,
@@ -72,6 +78,7 @@ fn secenekleri_coz(arg: &[String]) -> Result<Secenekler, String> {
             }
             "--sozluk-denetle" => s.sozluk_denetle = true,
             "--studyo" => s.studyo = true,
+            "--palet" => s.palet = true,
             "--ayar" => s.ayar = Some(PathBuf::from(deger(&mut i, ad)?)),
             "--model" => s.model = Some(deger(&mut i, ad)?),
             "--surum" => s.surum = true,
@@ -227,6 +234,9 @@ fn main() {
     if secenekler.studyo {
         std::process::exit(studyo_kipi(&secenekler, &veri_klasoru, &guncelleme_klasoru, false));
     }
+    if secenekler.palet {
+        std::process::exit(palet_kipi(&secenekler, &veri_klasoru));
+    }
 
     // Sürüm zip'inden çift tıklama (argüman yok, kurulu konumda ve derleme klasöründe değil):
     // arka plan yerine kurulum sihirbazı açılır.
@@ -324,6 +334,35 @@ fn studyo_kipi(s: &Secenekler, veri_klasoru: &Path, guncelleme_klasoru: &Path, i
         Ok(()) => 0,
         Err(h) => {
             gunluk::yaz(&format!("HATA: Stüdyo: {h}"));
+            1
+        }
+    }
+}
+
+/// Komut paleti süreci: kendi tek örnek kilidi (`Local\Echora.Palet`); zaten açıksa var olan palet
+/// penceresi öne getirilir ve çıkılır. Seçilen komut IPC ile Echora'ya gider (kuru örnekten
+/// açıldıysa `ECHORA_KURU=1` ile kuru örneğe).
+fn palet_kipi(s: &Secenekler, veri_klasoru: &Path) -> i32 {
+    // SAFETY: sabit ad; tutamaç süreç sonuna dek `_kilit`te yaşar.
+    let _kilit = unsafe { CreateMutexW(None, false, w!("Local\\Echora.Palet")) };
+    // SAFETY: CreateMutexW'dan hemen sonra, aynı iş parçacığında.
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // SAFETY: salt pencere arama ve öne getirme.
+        unsafe {
+            if let Ok(h) = FindWindowW(None, w!("Echora Komut Paleti")) {
+                if IsIconic(h).as_bool() {
+                    let _ = ShowWindow(h, SW_RESTORE);
+                }
+                let _ = SetForegroundWindow(h);
+            }
+        }
+        return 0;
+    }
+    let ayar_yolu = s.ayar.clone().unwrap_or_else(|| veri_klasoru.join("ayarlar.toml"));
+    match studyo::palet_calistir(studyo::PaletSecenekleri { ayar_yolu }) {
+        Ok(()) => 0,
+        Err(h) => {
+            gunluk::yaz(&format!("HATA: komut paleti: {h}"));
             1
         }
     }
@@ -458,6 +497,8 @@ mod testler {
         assert!(s.kuru);
         assert!(!s.studyo);
         assert!(coz(&["--studyo", "--ayar", "a.toml"]).unwrap().studyo);
+        let p = coz(&["--palet", "--ayar", "a.toml"]).unwrap();
+        assert!(p.palet && !p.studyo && !p.kuru);
         assert_eq!(s.sure, Some(8));
         assert_eq!(s.ayar, Some(PathBuf::from("a.toml")));
         assert!(coz(&["--sure", "x"]).is_err());

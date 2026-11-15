@@ -1,5 +1,6 @@
 # Sürüm hattı: "vX.Y.Z" etiketi push'lanınca (ya da elle, var olan bir etiket için) derler, sınar,
-# paketler ve GitHub Release oluşturur: Echora-X.Y.Z-win64.zip + SHA256SUMS.txt.
+# paketler ve GitHub Release oluşturur: Echora-Kurulum-X.Y.Z.exe (tek dosyalık kurulum) +
+# Echora-X.Y.Z-win64.zip (güncelleyici bunu kullanır) + SHA256SUMS.txt (her iki dosyanın özeti).
 #
 # İki iş:
 # - derle  : yalnız okuma izni; depo kimlik bilgisi saklanmadan alınır; ÖNBELLEK YOK (sürüm
@@ -143,7 +144,8 @@ jobs:
           }
           if (-not $notlar) { $notlar = (git tag -l --format='%(contents)' $env:ETIKET | Out-String).Trim() }
           if (-not $notlar) { $notlar = "Echora $($env:ETIKET)" }
-          $notlar += "`n`nIndirme: Echora-$($env:ETIKET.TrimStart('v'))-win64.zip (SHA-256: SHA256SUMS.txt)"
+          $sv = $env:ETIKET.TrimStart('v')
+          $notlar += "`n`nIndirme: Echora-Kurulum-$sv.exe (onerilen); alternatif: Echora-$sv-win64.zip (SHA-256: SHA256SUMS.txt)"
           [IO.File]::WriteAllText("$PWD\dist\notlar.md", $notlar, (New-Object Text.UTF8Encoding($false)))
           Get-Content "$PWD\dist\notlar.md" -Encoding UTF8
 
@@ -154,6 +156,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           path: |
+            dist/Echora-Kurulum-${{ steps.surum.outputs.surum }}.exe
             dist/Echora-${{ steps.surum.outputs.surum }}-win64.zip
             dist/SHA256SUMS.txt
             dist/notlar.md
@@ -182,13 +185,21 @@ jobs:
         run: |
           if ($env:ETIKET -ne "v$($env:SURUM)") { throw "Etiket/surum uyusmuyor: $env:ETIKET / $env:SURUM" }
           $zip = "dist\Echora-$($env:SURUM)-win64.zip"
+          $kurulum = "dist\Echora-Kurulum-$($env:SURUM).exe"
           $ozet = "dist\SHA256SUMS.txt"
-          foreach ($f in $zip, $ozet, "dist\notlar.md") { if (-not (Test-Path $f)) { throw "yok: $f" } }
-          # Artifact'in kendi icinde tutarli oldugu son kez denetlenir.
-          $h = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
-          if (-not ((Get-Content $ozet -Raw) -match "(?m)^$h  Echora-$([regex]::Escape($env:SURUM))-win64\.zip$")) { throw "SHA256SUMS zip ile uyusmuyor" }
+          foreach ($f in $kurulum, $zip, $ozet, "dist\notlar.md") { if (-not (Test-Path $f)) { throw "yok: $f" } }
+          # Artifact'in kendi icinde tutarli oldugu son kez denetlenir: SHA256SUMS her iki dosyanin
+          # ozetini icermeli ve baska satir tasimamali.
+          $ozetMetni = Get-Content $ozet -Raw
+          foreach ($f in $zip, $kurulum) {
+            $h = (Get-FileHash -Algorithm SHA256 $f).Hash.ToLowerInvariant()
+            $ad = [IO.Path]::GetFileName($f)
+            if (-not ($ozetMetni -match "(?m)^$h  $([regex]::Escape($ad))\r?$")) { throw "SHA256SUMS $ad ile uyusmuyor" }
+          }
+          $satirSayisi = @($ozetMetni -split "`n" | Where-Object { $_.Trim() }).Count
+          if ($satirSayisi -ne 2) { throw "SHA256SUMS tam iki satir icermeli (bulunan: $satirSayisi)" }
           # PowerShell 5.1'de yerel komutun stderr'ini yonlendirmek hata kaydina donusur; cmd ile sorulur.
           cmd /c "gh release view %ETIKET% >nul 2>&1"
           if ($LASTEXITCODE -eq 0) { throw "$env:ETIKET icin release zaten var; yayinlanmis varliklar degistirilmez. Yeni surum numarasi kullanin." }
-          gh release create $env:ETIKET $zip $ozet --verify-tag --title "Echora $($env:SURUM)" --notes-file dist\notlar.md
+          gh release create $env:ETIKET $kurulum $zip $ozet --verify-tag --title "Echora $($env:SURUM)" --notes-file dist\notlar.md
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

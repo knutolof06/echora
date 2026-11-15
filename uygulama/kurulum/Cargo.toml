@@ -1,0 +1,18 @@
+[package]
+name = "kurulum"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "echora-kurulum"
+path = "src/main.rs"
+
+[dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# Yalnız okuma (açma); deflate saf Rust (zlib-rs) — güncelleyiciyle aynı özellikler.
+zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+sha2 = "0.11.1"
+
+[build-dependencies]
+sha2 = "0.11.1"

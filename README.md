@@ -9,10 +9,11 @@ yapılır; ses hiçbir zaman diske yazılmaz ya da ağa gönderilmez. (Uygulaman
 ## İndirme ve kurulum
 
 1. [Releases](https://github.com/knutolof06/echora/releases) sayfasından son sürümün
-   `Echora-X.Y.Z-win64.zip` dosyasını indirin.
-2. **Önce zip'i bir klasöre çıkarın:** zip'e sağ tıklayıp **Tümünü ayıkla** deyin. `echora.exe`'yi
-   zip'in içinden (çıkarmadan) çalıştırmayın; DLL'ler ve tanıma modeli bulunamaz.
-3. Çıkardığınız klasördeki `echora.exe`'ye çift tıklayın. Kurulum sihirbazı açılır:
+   `Echora-Kurulum-X.Y.Z.exe` dosyasını indirin (tek dosya; tanıma modeli ve kütüphaneler içinde).
+2. Dosyaya çift tıklayın. Kurulum dosyası kendini bir geçici klasöre açar (birkaç saniye sürer,
+   küçük bir "Echora hazırlanıyor" penceresi görünür) ve Echora'nın kurulum sihirbazını başlatır.
+   Geçici klasör bir sonraki kurulum dosyası çalıştırıldığında (1 günden eskiyse) kendiliğinden temizlenir.
+3. Açılan kurulum sihirbazında:
    - dosyalar `%LOCALAPPDATA%\Programs\Echora` klasörüne kopyalanır (yönetici yetkisi gerekmez) ve
      Başlat menüsüne "Echora" ile "Echora Stüdyo" eklenir,
    - "Windows ile başlat" seçeneği (varsayılan açık),
@@ -20,12 +21,18 @@ yapılır; ses hiçbir zaman diske yazılmaz ya da ağa gönderilmez. (Uygulaman
      Windows'un mikrofon ayar sayfası açılır (bu bir Windows gizlilik ayarıdır; Echora yalnız okur,
      değiştirmez),
    - isterseniz mikrofonu deneyebilirsiniz (canlı seviye çubuğu).
-4. **Kur ve başlat**'a basın. Echora tepside başlar; zip'ten açtığınız klasörü silebilirsiniz.
+4. **Kur ve başlat**'a basın. Echora tepside başlar; indirdiğiniz kurulum dosyasını silebilirsiniz.
 
-**SmartScreen uyarısı:** Echora imzasız (kod imzalama sertifikası yok) olduğu için Windows ilk
-açılışta "Windows bilgisayarınızı korudu" diyebilir. Bu imzasız uygulamalarda olağandır:
-**Ek bilgi → Yine de çalıştır** ile geçilir. İndirdiğiniz zip'in özetini aynı sürümdeki
-`SHA256SUMS.txt` ile karşılaştırabilirsiniz (PowerShell: `Get-FileHash .\Echora-X.Y.Z-win64.zip`).
+**İkinci seçenek (zip):** aynı sayfadaki `Echora-X.Y.Z-win64.zip` dosyasını indirip **önce bir
+klasöre çıkarın** (sağ tık > **Tümünü ayıkla**; `echora.exe`'yi zip'in içinden çalıştırmayın, DLL'ler
+ve tanıma modeli bulunamaz), sonra çıkardığınız klasördeki `echora.exe`'ye çift tıklayın; aynı
+sihirbaz açılır. Uygulamanın kendi güncelleyicisi de bu zip'i kullanır.
+
+**SmartScreen uyarısı:** Echora imzasız (kod imzalama sertifikası yok) olduğu için Windows,
+kurulum dosyası ilk çalıştırıldığında "Windows bilgisayarınızı korudu" diyebilir. Bu imzasız
+uygulamalarda olağandır: **Ek bilgi → Yine de çalıştır** ile geçilir. İndirdiğiniz dosyanın özetini
+aynı sürümdeki `SHA256SUMS.txt` ile karşılaştırabilirsiniz (PowerShell:
+`Get-FileHash .\Echora-Kurulum-X.Y.Z.exe`; zip için `Get-FileHash .\Echora-X.Y.Z-win64.zip`).
 
 Eski bir "Yankı" kurulumu varsa sihirbaz onu (çalışmıyorsa) kaldırır; ayarlarınız korunur ve ilk
 açılışta yeni klasöre taşınır.
@@ -49,7 +56,11 @@ ekler. Kaldırmak için `.\kaldir.ps1` (ayarlarınız korunur; `-AyarlariSil` il
 Kurmadan denemek için: `cargo build --release` ve `target\release\echora.exe` (derleme klasöründen
 çalışan exe kurulum sihirbazını açmaz ve güncellenmez).
 
-Sürüm paketi: `araclar\paketle.ps1` → `dist\Echora-X.Y.Z-win64.zip` ve `dist\SHA256SUMS.txt`.
+Sürüm paketi: `araclar\paketle.ps1` → `dist\Echora-X.Y.Z-win64.zip`, `dist\Echora-Kurulum-X.Y.Z.exe`
+(zip'i içine gömen tek dosyalık kurulum) ve her ikisinin özetini taşıyan `dist\SHA256SUMS.txt`.
+Kurulum exe'si `uygulama/kurulum` crate'idir; `ECHORA_PAKET_ZIP` olmadan derlenirse yalnız
+"geliştirme derlemesi" iletisi gösterir. `Echora-Kurulum-X.Y.Z.exe --dogrula` pencere açmadan gömülü
+paketin özetini ve zip içeriğini denetler (çıkış kodu 0 = tamam).
 
 ## Güncellemeler
 
@@ -119,6 +130,50 @@ Komuttan sonra yaklaşık yarım saniye susun; Echora konuşmanın bittiğini se
 "küçült" gibi kelimeler modelde yoktur; bu yüzden komutlar "krom", "kitle", "indir" gibi modelin
 bildiği kelimelerle yazılmıştır. Yeni bir ifade eklerken Stüdyo'daki **Sözlüğü denetle** düğmesini
 kullanın.
+
+## Klavye kısayolları ve yeni kullanım biçimleri
+
+### Klavye kısayolları
+Bir komuta sesle değil tuşla da ulaşabilirsiniz: **Stüdyo > Kısayollar**'da "tuşa basarak ata"
+kutusuna tıklayıp kombinasyona basın (ör. `Ctrl+Alt+1`) ve çalışacak komutu seçin. Kısayollar
+her yerde çalışır, tetik kelimesi gerektirmez (tuşa basmak niyeti zaten gösterir; riskli komutlar da
+onaysız çalışır) ve dinleme duraklatılmış olsa bile işler. Tek başına harf tuşu atanamaz (yazmayı
+bozar): en az bir `Ctrl`/`Alt`/`Shift`/`Win` gerekir (F13-F24 hariç). Kısayol başka bir uygulamada
+kullanılıyorsa Echora bir balonla bildirir.
+
+### Bas-konuş dinleme kipi
+Stüdyo > Kısayollar'da dinleme kipini **"Tuşla"** yaparsanız mikrofon yalnız dinleme tuşuna
+(varsayılan `Win+Alt+Boşluk`) bastığınızda, ayarlanan süre (varsayılan 6 sn) boyunca komut dinler;
+bu pencerede söylediğiniz komut tetik kelimesi olmadan çalışır. Bu kipte tanıma modeli de boşta hiç
+yüklenmez. **"Sürekli"** kipte (varsayılan) dinleme tuşu isteğe bağlıdır: basınca açılan pencerede
+riskli komutlar tetiksiz çalışır.
+
+### Zamanlı komutlar
+Bazı komutlara süre ekleyebilirsiniz: **"atlas yarım saat sonra bilgisayarı uyut"**, "on dakika
+sonra müziği durdur", "bir saat sonra sessize al". Süreler: beş, on, on beş, yirmi, otuz, kırk beş
+dakika, yarım saat, bir saat, iki saat. Süre dolmadan bir dakika önce bir balon bildirir; tepsi simgesinin
+ipucunda kalan süre görünür ve tepsi menüsündeki **Zamanlayıcılar** alt menüsünden iptal edilebilir.
+İptal için **"zamanlayıcı iptal"** (ya da "geri sayım iptal") deyin. Zamanlayıcılar yalnız Echora
+çalışırken bellekte tutulur: **uygulama kapanınca kaybolurlar.** Varsayılan olarak ekranları kapat, bilgisayarı uyut / kitle,
+müziği durdur ve sessize al zamanlanabilir; başka komutlar için ayar dosyasında o komuta
+`zamanlanabilir = true` ekleyin.
+
+### Komut paleti
+`Ctrl+Alt+P` (Stüdyo > Kısayollar'dan değiştirilebilir) küçük bir arama penceresi açar: komutun
+bir kısmını yazın, ok tuşlarıyla seçip **Enter** ile çalıştırın (Esc ya da başka pencereye geçmek
+kapatır). Paletten çalıştırılan riskli komutlar da tetiksiz çalışır; yazıp Enter'a basmak niyeti gösterir.
+
+### Çift alkış (varsayılan kapalı)
+Stüdyo > Kısayollar > **Çift alkış** kartından açıp bir komut seçerseniz, iki kez el çırpınca o komut
+çalışır (ör. "ekranları kapat"). Hassasiyet ayarlanabilir; "Mikrofonla dene" ile canlı algılamayı
+görebilirsiniz. Üç alkış, konuşma ve müzik tetiklemez; art arda tetiklenmeyi önlemek için iki saniye
+beklenir. Açık olduğunda mikrofon sesi ek olarak alkış için çok hafif bir hesaptan geçer.
+
+### Kolay efekt seçimi
+**Stüdyo > Efektler > Komut efektleri** sekmesinde her komutun yanında efekt açılır listesi ve
+**önizle** düğmesi vardır ("Eyleme göre" seçeneği eylem türüne uygun varsayılanı kullanır); üstteki
+toplu düğmeyle tüm komutlara tek efekt atanabilir. Komutlar listesinde de efekt etiketine tıklayıp
+buradan seçim yapabilirsiniz; efekt listesi her efekti kullanan komut sayısını gösterir.
 
 ## Stüdyo
 
@@ -210,6 +265,7 @@ crates/eylemci    sistem eylemleri (ekran, ses, pencere, oturum, medya, uygulama
 crates/sahne      efekt motoru (D3D11 + DirectComposition, HLSL)
 crates/studyo     ayar penceresi ve kurulum sihirbazı (egui)
 uygulama/yanki    tepsi uygulaması ve güncelleyici (echora.exe)
+uygulama/kurulum  tek dosyalık kurulum exe'si (Echora-Kurulum.exe; paketi içine gömer)
 araclar/olcum     ölçüm aracı (Faz 0)
 araclar/*.ps1     paketleme, model indirme
 ```

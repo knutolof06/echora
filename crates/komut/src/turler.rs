@@ -33,3 +33,14 @@ pub enum YontemTercihi {
     Ddc,
     Perde,
 }
+
+/// Mikrofonun ne zaman komut dinleyeceği.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DinlemeKipi {
+    /// Sürekli dinler (varsayılan).
+    #[default]
+    Surekli,
+    /// Yalnız dinleme tuşuna basınca, `dinleme_suresi_sn` boyunca dinler.
+    Tusla,
+}

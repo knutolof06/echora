@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 
 use eframe::egui::{self, RichText, Ui};
+use komut::efekt::Efekt;
 use komut::{eylem_adlari, eylem_alanlari, EkranSecimi, HamUygulama, MedyaTusu};
 
 use super::ortak;
-use super::Uygulama;
+use super::{Bolum, Uygulama};
 use crate::duzen::{self, HataYeri, RiskliSecim};
 
 #[derive(Default)]
@@ -55,6 +56,10 @@ enum SatirIsi {
     Asagi(usize),
     Sil(usize),
     Dene(usize, usize),
+    /// Satırın efektini değiştir (`None` = eyleme göre).
+    Efekt(usize, Option<Efekt>),
+    /// Efektler > Komut efektleri'nde bu satırı önizle.
+    Onizle(usize),
 }
 
 impl Uygulama {
@@ -140,6 +145,15 @@ impl Uygulama {
                 };
             }
             Some(SatirIsi::Dene(i, a)) => self.dene(i, a),
+            Some(SatirIsi::Efekt(i, e)) => {
+                if let Some(k) = self.ham.komut.get_mut(i) {
+                    k.efekt = e;
+                }
+            }
+            Some(SatirIsi::Onizle(i)) => {
+                self.bolum_ac(Bolum::Efektler);
+                self.efektler.komutu_onizle(i);
+            }
             None => {}
         }
         self.ifade_tamponlarini_esitle();
@@ -164,6 +178,7 @@ impl Uygulama {
         };
         let mut secili = self.komutlar.dene_secimi.get(&i).copied().unwrap_or(varsayilan).min(acilimlar.len().saturating_sub(1));
         let riskli = self.komut_riskli(i).unwrap_or(self.ham.komut[i].riskli == Some(true));
+        let varsayilan_efekt = self.harita.varsayilan_efekt(i);
         let k = &self.ham.komut[i];
         let ifadeler = if k.ifadeler.is_empty() { "(ifade yok)".to_string() } else { k.ifadeler.join("  ·  ") };
         let eylem = duzen::eylem_gorunen_adi(&k.eylem).to_string();
@@ -230,6 +245,7 @@ impl Uygulama {
         ui.horizontal_wrapped(|ui| {
             ui.add_space(26.0);
             ui.label(RichText::new(eylem).weak());
+            efekt_cipi(ui, i, k.efekt, varsayilan_efekt, is);
             if riskli {
                 ortak::rozet(ui, "tetik ister", ortak::uyari_rengi(ui));
             }
@@ -245,6 +261,7 @@ impl Uygulama {
     fn komut_ayrintisi(&mut self, ui: &mut Ui, i: usize) {
         let uygulama_var = !self.ham.uygulama.is_empty();
         let sahne_var = !self.ham.sahne.is_empty();
+        let varsayilan_efekt = self.harita.varsayilan_efekt(i);
         let k = &mut self.ham.komut[i];
         egui::Grid::new(("komut_ayrinti", i)).num_columns(2).spacing([16.0, 10.0]).min_col_width(110.0).show(ui, |ui| {
             ortak::alan_etiketi(ui, "İfadeler");
@@ -341,7 +358,7 @@ impl Uygulama {
             ui.end_row();
 
             ortak::alan_etiketi(ui, "Efekt");
-            ortak::efekt_secici(ui, ("komut_efekt", i), &mut k.efekt, "Eyleme göre (varsayılan)");
+            ortak::komut_efekt_secici(ui, ("komut_efekt", i), &mut k.efekt, varsayilan_efekt, 230.0);
             ui.end_row();
         });
         let k = &self.ham.komut[i];
@@ -498,4 +515,36 @@ impl Uygulama {
             }
         }
     }
+}
+
+/// Satırdaki tıklanabilir efekt çipi: renkli nokta + efekt adı; tıklanınca efekt listesi ve
+/// "önizle" açılır.
+fn efekt_cipi(ui: &mut Ui, i: usize, efekt: Option<Efekt>, varsayilan: Option<Efekt>, is: &mut Option<SatirIsi>) {
+    let ad = match (efekt, varsayilan) {
+        (Some(e), _) => e.ad().to_string(),
+        (None, Some(v)) => format!("{} (eyleme göre)", v.ad()),
+        (None, None) => "Eyleme göre".to_string(),
+    };
+    let yazi = ortak::efekt_yazisi(ui, efekt.or(varsayilan), &ad, None);
+    let cip = ui
+        .add(egui::Button::new(egui::WidgetText::from(yazi)).small().corner_radius(10))
+        .on_hover_text("Efekt: tıklayıp değiştirin");
+    egui::Popup::menu(&cip).show(|ui| {
+        ui.set_min_width(330.0);
+        let is_v = ortak::efekt_yazisi(ui, varsayilan, "Eyleme göre", Some(varsayilan.map_or("", |e| e.ad())));
+        if ui.selectable_label(efekt.is_none(), is_v).clicked() {
+            *is = Some(SatirIsi::Efekt(i, None));
+        }
+        ui.separator();
+        for e in Efekt::HEPSI {
+            let yazi = ortak::efekt_yazisi(ui, Some(e), e.ad(), Some(ortak::efekt_aciklamasi(e)));
+            if ui.selectable_label(efekt == Some(e), yazi).clicked() {
+                *is = Some(SatirIsi::Efekt(i, Some(e)));
+            }
+        }
+        ui.separator();
+        if ui.button("Efektler bölümünde önizle").clicked() {
+            *is = Some(SatirIsi::Onizle(i));
+        }
+    });
 }

@@ -7,6 +7,7 @@ mod ayar_testler;
 pub mod efekt;
 mod esleme;
 mod ham;
+mod kisayol;
 mod metin;
 mod ortak;
 #[cfg(test)]
@@ -14,10 +15,12 @@ mod ortak_testler;
 mod saat;
 #[cfg(test)]
 mod sema_testler;
+#[cfg(test)]
+mod v02_testler;
 mod sayi;
 mod turler;
 
-pub use turler::{EkranSecimi, MedyaTusu, YontemTercihi};
+pub use turler::{DinlemeKipi, EkranSecimi, MedyaTusu, YontemTercihi};
 
 pub use ayar::{
     adim_alanlari, efekt_varsayilani, eylem_adlari, eylem_alanlari, Adim, Ayarlar, EfektKipi, Eylem,
@@ -25,7 +28,10 @@ pub use ayar::{
 };
 pub use esleme::Eslesme;
 pub use ham::{
-    HamAdim, HamAyarlar, HamEkran, HamKomut, HamOlaylar, HamSahne, HamUygulama,
+    HamAdim, HamAlkis, HamAyarlar, HamEkran, HamKisayol, HamKomut, HamOlaylar, HamSahne, HamUygulama,
+};
+pub use kisayol::{
+    kisayol_coz, AlkisAyari, Kisayol, KisayolTanimi, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN,
 };
 pub use metin::turkce_kucuk;
 pub use ortak::{EfektOrtak, EfektOzel};

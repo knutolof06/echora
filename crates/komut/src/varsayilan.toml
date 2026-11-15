@@ -20,6 +20,42 @@
 # guncelleme_otomatik     : (varsayılan true) Echora günde bir kez yeni sürüm olup olmadığını
 #                           denetler.
 #
+# --- DİNLEME VE KISAYOLLAR ---
+# dinleme_kipi            : "surekli" (varsayılan) ya da "tusla". Sürekli kipte mikrofon hep
+#                           dinler. Gürültülü odada ya da yakında televizyon/müzik varsa yanlış
+#                           tetikleme olabilir; "tusla" kipinde mikrofon yalnız dinleme_tusu'na
+#                           basınca dinleme_suresi_sn boyunca komut dinler. Tuşla kipinde
+#                           dinleme_tusu zorunludur.
+# dinleme_tusu            : (isteğe bağlı) "win+alt+space" gibi genel kısayol. Basınca
+#                           dinleme_suresi_sn kadar bir dinleme penceresi açılır. Bu pencerede
+#                           söylenen riskli komutlar TETİK KELİMESİ OLMADAN çalışır (tuşa basmak
+#                           niyeti zaten gösterir). Sürekli kipte de aynı işi görür: tuşa basıp
+#                           "ekranları kapat" demek yeterlidir. İkinci basış pencereyi kapatır.
+# dinleme_suresi_sn       : Dinleme penceresinin süresi, 2-30 sn (varsayılan 6).
+# palet_tusu              : (isteğe bağlı) komut paletini açan kısayol; paletten yazılan komut
+#                           tetik kelimesi istemeden çalışır.
+# [[kisayol]]             : Tuşla doğrudan komut çalıştırma (ses gerekmez, tetik gerekmez).
+#   tuslar : Değiştiriciler ve ana tuş "+" ile yazılır: ctrl, alt, shift, win + bir tuş
+#            (harf, rakam, f1-f24, space, enter, tab, esc, insert, delete, home, end, pageup,
+#            pagedown, up, down, left, right, numpad0-numpad9, virgul, nokta, tire). Türkçe adlar
+#            da olur: kontrol, boşluk, sil, yukarı, aşağı, sol, sağ. En az bir değiştirici
+#            zorunludur (yalnız F13-F24 tek başına olabilir); win+l, ctrl+alt+delete gibi
+#            Windows'a ayrılmış kombinasyonlar kullanılamaz.
+#   ifade  : Çalışacak komutun TAM açılmış, tetiksiz ifadesi; bir komutla birebir eşleşmelidir
+#            (şablonlu komutlarda açılmış biçim: "sesi yüzde elli yap", "krom aç").
+#   Örnek:
+#     [[kisayol]]
+#     tuslar = "ctrl+alt+1"
+#     ifade = "krom aç"
+#   Aynı kısayol iki kez (dinleme_tusu ve palet_tusu dahil) kullanılamaz.
+# [alkis]                 : Çift alkış tetikleyicisi (varsayılan kapalı).
+#   acik       : true ise iki kez hızlıca el çırpmak ifade'deki komutu çalıştırır (riskli olsa da
+#                tetik kelimesi gerekmez; alkış niyeti gösterir). Mikrofonu zaten dinleyen Echora
+#                başka ses işlemez; boşta ek yük çok azdır.
+#   ifade      : Çalışacak komutun tam açılmış, tetiksiz ifadesi.
+#   hassasiyet : 0.0-1.0 (varsayılan 0.6); yüksek değer daha hafif alkışı da algılar ama yanlış
+#                algılama artar.
+#
 # --- EFEKTLER ---
 # efektler_acik           : (varsayılan true) false ise HİÇBİR efekt oynamaz; komutlar yine çalışır.
 # olay_efektleri_acik     : (varsayılan true) false ise yalnız ipucu efektleri (duyuldu,
@@ -96,6 +132,14 @@
 #     ses_artir/azalt : adim = 10 (1-100, varsayılan 10)
 #     medya           : tus = "oynat_duraklat" | "sonraki" | "onceki" | "durdur" (zorunlu)
 #     komut_calistir  : komut = "..." (zorunlu)      tus_gonder : tuslar = "ctrl+shift+esc" (zorunlu)
+#     zamanlayicilari_iptal : bekleyen tüm zamanlayıcıları iptal eder.
+#   zamanlanabilir : (isteğe bağlı, true/false) true ise her ifade için "<süre> sonra <ifade>"
+#                açılımları da üretilir: "beş dakika sonra bilgisayarı uyut". Süreler: beş, on,
+#                on beş, yirmi, otuz, kırk beş dakika, yarım saat, bir saat, iki saat. Zamanlı
+#                komut asıl komutun riskliliğini taşır. Yalnız sabit eylemli komutlarda ve
+#                {ekran} şablonunda yazılabilir; {sayi}, {uygulama}, {sahne} ile hata verir.
+#                Zamanlayıcılar bellektedir: Echora kapanırsa kaybolur. "zamanlayıcı iptal"
+#                hepsini siler. Sahne adımlarında zamanlama kullanılamaz.
 #
 # Şablonlar (ifade başına en çok bir tane; yalnız belirtilen eylemlerde):
 #   {uygulama} : uygulama_ac, uygulama_kapat, uygulama_one_getir; her [[uygulama]] için açılır.
@@ -112,6 +156,10 @@ guven_esigi = 0.7
 efektler_acik = true
 olay_efektleri_acik = true
 guncelleme_otomatik = true
+dinleme_kipi = "surekli"
+dinleme_tusu = "win+alt+space"
+dinleme_suresi_sn = 6
+palet_tusu = "ctrl+alt+p"
 
 # Tüm efektler için tek ayar. Bir efekti ayrıca değiştirmek isterseniz [efektler.<ad>] tablosuna
 # yalnız farklı olmasını istediğiniz alanları yazın (örnek: [efektler.aurora] renk1 = "#69F0AE").
@@ -123,6 +171,13 @@ siddet = 0.7
 ekran = "ana"
 sese_tepki = true
 hiz = 1.0
+
+# Çift alkış: kapalı. Açmak için acik = true yapın (ifade bir komutla birebir eşleşmelidir).
+
+[alkis]
+acik = false
+ifade = "ekranları kapat"
+hassasiyet = 0.6
 
 # Ekran ipucu ayarları (isteğe bağlı). Aşağıdakiler varsayılan renk ön tanımlarıdır;
 # silerseniz ön tanım kullanılır.
@@ -220,12 +275,18 @@ adimlar = [
   { eylem = "ekranlari_kapat" },
 ]
 
+# Tuşla komut örneği (yorum satırı): Ctrl+Alt+1 Krom'u açar.
+# [[kisayol]]
+# tuslar = "ctrl+alt+1"
+# ifade = "krom aç"
+
 # --- Ekranlar ---
 
 [[komut]]
 ifadeler = ["ekranları kapat", "ekranı kapat", "hepsini kapat"]
 eylem = "ekranlari_kapat"
 riskli = true
+zamanlanabilir = true
 
 # "ana ekranı kapat", "ikinci ekranı kapat", "sol ekranı kapat", "sağ ekranı kapat".
 [[komut]]
@@ -271,6 +332,7 @@ adim = 10
 [[komut]]
 ifadeler = ["sessize al", "sesi kapat"]
 eylem = "sessize_al"
+zamanlanabilir = true
 
 [[komut]]
 ifadeler = ["sesi aç"]
@@ -303,10 +365,12 @@ eylem = "masaustunu_goster"
 [[komut]]
 ifadeler = ["bilgisayarı kitle"]
 eylem = "oturumu_kilitle"
+zamanlanabilir = true
 
 [[komut]]
 ifadeler = ["bilgisayarı uyut"]
 eylem = "uyut"
+zamanlanabilir = true
 
 # --- Medya ---
 
@@ -315,6 +379,7 @@ eylem = "uyut"
 ifadeler = ["müziği durdur", "müziği oynat"]
 eylem = "medya"
 tus = "oynat_duraklat"
+zamanlanabilir = true
 
 [[komut]]
 ifadeler = ["sonraki şarkı"]
@@ -331,6 +396,11 @@ tus = "onceki"
 [[komut]]
 ifadeler = ["geri al"]
 eylem = "geri_al"
+
+# "beş dakika sonra bilgisayarı uyut" gibi zamanlı komutları iptal eder.
+[[komut]]
+ifadeler = ["zamanlayıcı iptal", "geri sayım iptal"]
+eylem = "zamanlayicilari_iptal"
 
 [[komut]]
 ifadeler = ["stüdyo aç", "ayarları aç"]

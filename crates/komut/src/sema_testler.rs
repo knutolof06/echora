@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Varsayılan dosyadaki komut sayısı (şablon açılımları dahil).
-const VARSAYILAN_KOMUT_SAYISI: usize = 145;
+const VARSAYILAN_KOMUT_SAYISI: usize = 228;
 
 fn coz_ok(metin: &str) -> Ayarlar {
     Ayarlar::coz(metin).unwrap_or_else(|h| panic!("beklenmedik hata: {h}"))
@@ -63,7 +63,7 @@ fn ilk_komut(a: &Ayarlar) -> &crate::Komut {
     &a.komutlar[0]
 }
 
-// --- yeni eylemler: tek tablo, 28 eylemin hepsi ---
+// --- yeni eylemler: tek tablo, 29 eylemin hepsi ---
 
 #[test]
 fn butun_eylemler_okunur_ve_varsayilan_riskleri_dogru() {
@@ -104,6 +104,7 @@ fn butun_eylemler_okunur_ve_varsayilan_riskleri_dogru() {
         ("medya", "şunu bunu yap", "tus = \"durdur\"", Eylem::Medya(MedyaTusu::Durdur), false),
         ("dinlemeyi_duraklat", "şunu bunu yap", "", Eylem::DinlemeyiDuraklat, true),
         ("geri_al", "şunu bunu yap", "", Eylem::GeriAl, false),
+        ("zamanlayicilari_iptal", "şunu bunu yap", "", Eylem::ZamanlayicilariIptal, false),
         ("studyoyu_ac", "şunu bunu yap", "", Eylem::StudyoyuAc, false),
         ("ayarlari_yeniden_yukle", "şunu bunu yap", "", Eylem::AyarlariYenidenYukle, false),
         ("cik", "şunu bunu yap", "", Eylem::Cik, true),
@@ -123,7 +124,7 @@ fn butun_eylemler_okunur_ve_varsayilan_riskleri_dogru() {
             true,
         ),
     ];
-    assert_eq!(satirlar.len(), 28);
+    assert_eq!(satirlar.len(), 29);
     // Tablo, eylem listesinin tamamını kapsıyor.
     let kapsanan: std::collections::HashSet<&str> = satirlar.iter().map(|s| s.0).collect();
     let tum: std::collections::HashSet<&str> = eylem_adlari().iter().map(|(a, _)| *a).collect();
@@ -141,9 +142,9 @@ fn butun_eylemler_okunur_ve_varsayilan_riskleri_dogru() {
 #[test]
 fn eylem_listesi_tutarli() {
     let adlar = eylem_adlari();
-    assert_eq!(adlar.len(), 28);
+    assert_eq!(adlar.len(), 29);
     let benzersiz: std::collections::HashSet<_> = adlar.iter().map(|(a, _)| a).collect();
-    assert_eq!(benzersiz.len(), 28);
+    assert_eq!(benzersiz.len(), 29);
     assert!(adlar.iter().all(|(a, g)| !a.is_empty() && !g.is_empty()));
     assert_eq!(adlar[0].0, "ekranlari_kapat");
 }
@@ -569,6 +570,11 @@ fn efekt_varsayilanlari_katalogla_uyumlu() {
         (Eylem::Uyut, Efekt::Nefes),
         (Eylem::DinlemeyiDuraklat, Efekt::Murekkep),
         (Eylem::GeriAl, Efekt::Tarama),
+        (Eylem::ZamanlayicilariIptal, Efekt::Tarama),
+        (
+            Eylem::Zamanla { dakika: 5, eylem: Box::new(Eylem::Uyut), gosterim: "x".into() },
+            Efekt::Sonar,
+        ),
         (Eylem::StudyoyuAc, Efekt::Nefes),
         (Eylem::AyarlariYenidenYukle, Efekt::Nefes),
         (Eylem::Cik, Efekt::Nefes),
@@ -815,6 +821,11 @@ fn el_yapimi_ham() -> HamAyarlar {
         model_birakma_sn: 120,
         windows_ile_baslat: true,
         anlasilmayanlari_kaydet: false,
+        dinleme_kipi: crate::DinlemeKipi::Tusla,
+        dinleme_tusu: Some("Kontrol+Alt+Boşluk".into()),
+        dinleme_suresi_sn: 10,
+        palet_tusu: Some("ctrl+alt+p".into()),
+        alkis: crate::HamAlkis { acik: true, ifade: "sesi aç".into(), hassasiyet: 0.4 },
         efektler_acik: true,
         olay_efektleri_acik: false,
         guncelleme_otomatik: false,
@@ -871,6 +882,10 @@ fn el_yapimi_ham() -> HamAyarlar {
                 HamAdim { eylem: Some("medya".into()), tus: Some(MedyaTusu::Sonraki), ..Default::default() },
             ],
         }],
+        kisayol: vec![
+            crate::HamKisayol { tuslar: "ctrl+alt+1".into(), ifade: "krom aç".into() },
+            crate::HamKisayol { tuslar: "win+shift+f5".into(), ifade: "sesi yüzde elli yap".into() },
+        ],
         komut: vec![
             HamKomut {
                 ifadeler: vec!["{uygulama} aç".into()],
@@ -882,6 +897,17 @@ fn el_yapimi_ham() -> HamAyarlar {
                 ifadeler: vec!["müziği durdur".into(), "müziği oynat".into()],
                 eylem: "medya".into(),
                 tus: Some(MedyaTusu::OynatDuraklat),
+                ..Default::default()
+            },
+            HamKomut {
+                ifadeler: vec!["sesi aç".into()],
+                eylem: "sesi_ac".into(),
+                zamanlanabilir: true,
+                ..Default::default()
+            },
+            HamKomut {
+                ifadeler: vec!["sesi yüzde {sayi} yap".into()],
+                eylem: "ses_ayarla".into(),
                 ..Default::default()
             },
             HamKomut {
@@ -1068,7 +1094,7 @@ fn varsayilan_dosyadaki_tum_kelimeler_modelin_sozlugunde() {
         sessize al aç kapat müziği durdur oynat sonraki önceki şarkı geri stüdyo ayarları sahne \
         modu iş oyun film gece sol sağ ikinci öne getir dinlemeyi başlat sürdür yeniden yükle \
         sıfır bir iki üç dört beş altı yedi sekiz dokuz on yirmi otuz kırk elli altmış yetmiş \
-        seksen doksan yüz \
+        seksen doksan yüz dakika sonra yarım saat zamanlayıcı iptal geri sayım \
         hepsini ana krom not defteri hesap makinesi youtube atlas";
     let izinli: std::collections::HashSet<&str> = VAR.split_whitespace().collect();
     let a = coz_ok(Ayarlar::varsayilan_toml());

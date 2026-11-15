@@ -9,7 +9,9 @@ use crate::metin::{bosluk_sadelestir, duzle, kelime_oneki, yalniz_harf};
 use crate::ortak::{EfektOrtak, EfektOzel};
 use crate::saat;
 use crate::sayi::sayi_sozcukleri;
-use crate::turler::{EkranSecimi, MedyaTusu, YontemTercihi};
+use crate::esleme::komut_bul_listede;
+use crate::kisayol::{kisayol_coz, AlkisAyari, Kisayol, KisayolTanimi};
+use crate::turler::{DinlemeKipi, EkranSecimi, MedyaTusu, YontemTercihi};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -19,6 +21,18 @@ const VARSAYILAN_SES_ADIMI: u32 = 10;
 /// Bir sahnedeki en çok adım (kazara dev dizileri önler).
 const SAHNE_ENCOK_ADIM: usize = 32;
 const BEKLE_ENCOK_MS: u32 = 10_000;
+/// Zamanlı açılımların süreleri: (söyleniş, dakika). Sabit liste; `sayi_sozcukleri` kullanılmaz.
+const ZAMAN_SURELERI: [(&str, u32); 9] = [
+    ("beş dakika", 5),
+    ("on dakika", 10),
+    ("on beş dakika", 15),
+    ("yirmi dakika", 20),
+    ("otuz dakika", 30),
+    ("kırk beş dakika", 45),
+    ("yarım saat", 30),
+    ("bir saat", 60),
+    ("iki saat", 120),
+];
 /// `{ekran}` şablonunun açılımı: (söyleniş, ekran).
 const EKRAN_SOZLERI: [(&str, EkranSecimi); 4] = [
     ("ana", EkranSecimi::Ana),
@@ -109,10 +123,11 @@ enum EylemTuru {
     Sahne,
     KomutCalistir,
     TusGonder,
+    ZamanlayicilariIptal,
 }
 
 /// (anahtar, Türkçe görünen ad). Stüdyo'nun eylem listesi; sıra gösterim sırasıdır.
-const EYLEM_ADLARI: [(&str, &str); 28] = [
+const EYLEM_ADLARI: [(&str, &str); 29] = [
     ("ekranlari_kapat", "Tüm ekranları kapat"),
     ("ana_ekrani_kapat", "Ana ekranı kapat"),
     ("ekrani_kapat", "Seçilen ekranı kapat"),
@@ -135,6 +150,7 @@ const EYLEM_ADLARI: [(&str, &str); 28] = [
     ("medya", "Medya tuşu"),
     ("dinlemeyi_duraklat", "Dinlemeyi duraklat"),
     ("geri_al", "Son eylemi geri al"),
+    ("zamanlayicilari_iptal", "Zamanlayıcıları iptal et"),
     ("studyoyu_ac", "Stüdyoyu aç"),
     ("ayarlari_yeniden_yukle", "Ayarları yeniden yükle"),
     ("cik", "Uygulamadan çık"),
@@ -190,6 +206,7 @@ impl EylemTuru {
             Self::Sahne => "sahne",
             Self::KomutCalistir => "komut_calistir",
             Self::TusGonder => "tus_gonder",
+            Self::ZamanlayicilariIptal => "zamanlayicilari_iptal",
         }
     }
 
@@ -223,6 +240,7 @@ impl EylemTuru {
             "sahne" => Self::Sahne,
             "komut_calistir" => Self::KomutCalistir,
             "tus_gonder" => Self::TusGonder,
+            "zamanlayicilari_iptal" => Self::ZamanlayicilariIptal,
             _ => return None,
         })
     }
@@ -263,6 +281,7 @@ impl EylemTuru {
             | Self::MasaustunuGoster
             | Self::Medya
             | Self::GeriAl
+            | Self::ZamanlayicilariIptal
             | Self::StudyoyuAc
             | Self::AyarlariYenidenYukle => false,
         }
@@ -383,6 +402,7 @@ impl EylemTuru {
             Self::Medya => Eylem::Medya(p.tus.ok_or("tus gerekli")?),
             Self::DinlemeyiDuraklat => Eylem::DinlemeyiDuraklat,
             Self::GeriAl => Eylem::GeriAl,
+            Self::ZamanlayicilariIptal => Eylem::ZamanlayicilariIptal,
             Self::StudyoyuAc => Eylem::StudyoyuAc,
             Self::AyarlariYenidenYukle => Eylem::AyarlariYenidenYukle,
             Self::Cik => Eylem::Cik,
@@ -469,6 +489,10 @@ pub enum Eylem {
     Sahne { ad: String },
     KomutCalistir(String),
     TusGonder(String),
+    /// `dakika` dakika sonra `eylem`i çalıştırır. `gosterim` asıl eylemin görünen adıdır.
+    Zamanla { dakika: u32, eylem: Box<Eylem>, gosterim: String },
+    /// Bekleyen tüm zamanlayıcıları iptal eder.
+    ZamanlayicilariIptal,
 }
 
 /// Sahnenin bir adımı.
@@ -539,7 +563,8 @@ pub fn efekt_varsayilani(e: &Eylem) -> Efekt {
         Eylem::Sahne { .. } => Efekt::Aurora,
         Eylem::KomutCalistir(_) | Eylem::TusGonder(_) => Efekt::Kivilcim,
         Eylem::DinlemeyiDuraklat => Efekt::Murekkep,
-        Eylem::GeriAl => Efekt::Tarama,
+        Eylem::GeriAl | Eylem::ZamanlayicilariIptal => Efekt::Tarama,
+        Eylem::Zamanla { .. } => Efekt::Sonar,
         Eylem::SesAyarla(_)
         | Eylem::SesArtir(_)
         | Eylem::SesAzalt(_)
@@ -596,6 +621,15 @@ pub struct Ayarlar {
     pub ekran_yontemleri: Vec<(String, YontemTercihi)>,
     /// Mikrofon aygıt kimliği; `None` = varsayılan.
     pub mikrofon: Option<String>,
+    pub dinleme_kipi: DinlemeKipi,
+    /// Dinleme penceresini açan kısayol; `Tusla` kipinde her zaman vardır.
+    pub dinleme_tusu: Option<Kisayol>,
+    /// Tuş penceresinin süresi, 2-30 sn.
+    pub dinleme_suresi_sn: u32,
+    /// Komut paletini açan kısayol.
+    pub palet_tusu: Option<Kisayol>,
+    pub kisayollar: Vec<KisayolTanimi>,
+    pub alkis: AlkisAyari,
 }
 
 impl Ayarlar {
@@ -725,6 +759,18 @@ impl Ayarlar {
         let sahneler = sahneleri_kur(&ham.sahne, &ham.uygulama)?;
         let komutlar = komutlari_ac(&tetik, ham, &sahneler)?;
 
+        if !(2..=30).contains(&ham.dinleme_suresi_sn) {
+            return Err(format!("dinleme_suresi_sn 2 ile 30 arasında olmalı: {}", ham.dinleme_suresi_sn));
+        }
+        let dinleme_tusu = istege_bagli_tus("dinleme_tusu", ham.dinleme_tusu.as_deref())?;
+        let palet_tusu = istege_bagli_tus("palet_tusu", ham.palet_tusu.as_deref())?;
+        if ham.dinleme_kipi == DinlemeKipi::Tusla && dinleme_tusu.is_none() {
+            return Err("dinleme_kipi \"tusla\" iken dinleme_tusu gerekli".into());
+        }
+        let kisayollar = kisayollari_kur(ham, &komutlar)?;
+        tus_cakismasi_denetle(&dinleme_tusu, &palet_tusu, &kisayollar)?;
+        let alkis = alkis_kur(ham, &komutlar)?;
+
         Ok(Self {
             tetik,
             guven_esigi,
@@ -745,8 +791,87 @@ impl Ayarlar {
             anlasilmayanlari_kaydet: ham.anlasilmayanlari_kaydet,
             ekran_yontemleri,
             mikrofon: ham.mikrofon.clone(),
+            dinleme_kipi: ham.dinleme_kipi,
+            dinleme_tusu,
+            dinleme_suresi_sn: ham.dinleme_suresi_sn,
+            palet_tusu,
+            kisayollar,
+            alkis,
         })
     }
+}
+
+fn istege_bagli_tus(ad: &str, deger: Option<&str>) -> Result<Option<Kisayol>, String> {
+    match deger {
+        None => Ok(None),
+        Some(s) => kisayol_coz(s).map(Some).map_err(|h| format!("{ad}: {h}")),
+    }
+}
+
+fn kisayollari_kur(ham: &HamAyarlar, komutlar: &[Komut]) -> Result<Vec<KisayolTanimi>, String> {
+    let mut liste = Vec::with_capacity(ham.kisayol.len());
+    for (sira, k) in ham.kisayol.iter().enumerate() {
+        let kaynak = format!("kisayol #{}", sira + 1);
+        let kisayol = kisayol_coz(&k.tuslar).map_err(|h| format!("{kaynak}: tuslar: {h}"))?;
+        let ifade = duzle(&k.ifade);
+        if ifade.is_empty() {
+            return Err(format!("{kaynak}: ifade boş olamaz"));
+        }
+        if komut_bul_listede(komutlar, &ifade).is_none() {
+            return Err(format!(
+                "{kaynak}: ifade \"{ifade}\" hiçbir komutla birebir eşleşmiyor (tam açılmış, tetiksiz bir ifade yazın)"
+            ));
+        }
+        liste.push(KisayolTanimi { kisayol, ifade });
+    }
+    Ok(liste)
+}
+
+/// Aynı kısayol dinleme tuşu, palet tuşu ve `[[kisayol]]` satırları arasında bir kez kullanılabilir.
+fn tus_cakismasi_denetle(
+    dinleme: &Option<Kisayol>,
+    palet: &Option<Kisayol>,
+    kisayollar: &[KisayolTanimi],
+) -> Result<(), String> {
+    let mut gorulen: HashMap<&str, String> = HashMap::new();
+    let mut sirali: Vec<(&Kisayol, String)> = Vec::new();
+    if let Some(k) = dinleme {
+        sirali.push((k, "dinleme_tusu".to_string()));
+    }
+    if let Some(k) = palet {
+        sirali.push((k, "palet_tusu".to_string()));
+    }
+    for (i, t) in kisayollar.iter().enumerate() {
+        sirali.push((&t.kisayol, format!("kisayol #{}", i + 1)));
+    }
+    for (k, kaynak) in sirali {
+        if let Some(onceki) = gorulen.insert(k.metin.as_str(), kaynak.clone()) {
+            return Err(format!("kısayol çakışması \"{}\": {onceki} ile {kaynak}", k.metin));
+        }
+    }
+    Ok(())
+}
+
+fn alkis_kur(ham: &HamAyarlar, komutlar: &[Komut]) -> Result<AlkisAyari, String> {
+    let a = &ham.alkis;
+    if !(0.0..=1.0).contains(&a.hassasiyet) {
+        return Err(format!("alkis.hassasiyet 0.0 ile 1.0 arasında olmalı: {}", a.hassasiyet));
+    }
+    let ifade = duzle(&a.ifade);
+    if !ifade.is_empty() {
+        yalniz_harf(&ifade).map_err(|h| format!("alkis.ifade: {h}"))?;
+    }
+    if a.acik {
+        if ifade.is_empty() {
+            return Err("alkis açıkken alkis.ifade gerekli".into());
+        }
+        if komut_bul_listede(komutlar, &ifade).is_none() {
+            return Err(format!(
+                "alkis.ifade \"{ifade}\" hiçbir komutla birebir eşleşmiyor (tam açılmış, tetiksiz bir ifade yazın)"
+            ));
+        }
+    }
+    Ok(AlkisAyari { acik: a.acik, ifade, hassasiyet: a.hassasiyet as f32 })
 }
 
 fn efekt_anahtarlari() -> String {
@@ -1041,6 +1166,17 @@ fn komutlari_ac(tetik: &str, ham: &HamAyarlar, sahneler: &[SahneTanimi]) -> Resu
         alanlari_denetle(tur, &var, tur.komut_alanlari(), tur.komut_zorunlu(), &baglam)?;
 
         let sablon = tur.sablon(satir);
+        if satir.zamanlanabilir {
+            if let Some(s) = sablon.filter(|s| *s != Sablon::Ekran) {
+                return Err(format!(
+                    "{baglam}: zamanlanabilir {} şablonlu komutta kullanılamaz (yalnız sabit eylemli komutlar ve {{ekran}})",
+                    s.yer_tutucu()
+                ));
+            }
+            if tur == EylemTuru::ZamanlayicilariIptal {
+                return Err(format!("{baglam}: zamanlayicilari_iptal eylemi zamanlanamaz"));
+            }
+        }
         let riskli = satir.riskli.unwrap_or_else(|| tur.varsayilan_riskli());
         let temel = Param {
             ekran: satir.ekran,
@@ -1071,10 +1207,15 @@ fn komutlari_ac(tetik: &str, ham: &HamAyarlar, sahneler: &[SahneTanimi]) -> Resu
             }
 
             match (&sabit_eylem, sablon, &acilim_listesi) {
-                (Some(eylem), _, _) => ekle(
-                    &mut komutlar, &mut kaynaklar, tetik, duzle(ifade), None,
-                    riskli, eylem.clone(), satir.efekt, kaynak,
-                )?,
+                (Some(eylem), _, _) => {
+                    ekle(
+                        &mut komutlar, &mut kaynaklar, tetik, duzle(ifade), None,
+                        riskli, eylem.clone(), satir.efekt, kaynak.clone(),
+                    )?;
+                    if satir.zamanlanabilir {
+                        zamanli_ac(&mut komutlar, &mut kaynaklar, tetik, &kaynak)?;
+                    }
+                }
                 (None, Some(s), Some(liste)) => {
                     for a in liste {
                         let yer = s.yer_tutucu();
@@ -1084,8 +1225,11 @@ fn komutlari_ac(tetik: &str, ham: &HamAyarlar, sahneler: &[SahneTanimi]) -> Resu
                             &mut komutlar, &mut kaynaklar, tetik,
                             duzle(&ifade.replace(yer, &a.soylenis)),
                             Some(bosluk_sadelestir(&ifade.replace(yer, &a.gosterim))),
-                            riskli, eylem, satir.efekt, ayrinti,
+                            riskli, eylem, satir.efekt, ayrinti.clone(),
                         )?;
+                        if satir.zamanlanabilir {
+                            zamanli_ac(&mut komutlar, &mut kaynaklar, tetik, &ayrinti)?;
+                        }
                     }
                 }
                 _ => unreachable!("şablonlu komutun açılım listesi her zaman vardır"),
@@ -1097,6 +1241,31 @@ fn komutlari_ac(tetik: &str, ham: &HamAyarlar, sahneler: &[SahneTanimi]) -> Resu
         return Err("hiç komut üretilemedi: en az bir komut ve (şablonlu komutlar için) uygulama/sahne gerekli".into());
     }
     Ok(komutlar)
+}
+
+/// Az önce eklenen (son) komutun "<süre> sonra <ifade>" zamanlı açılımlarını ekler. Zamanlı komut
+/// asıl komutun riskliliğini devralır; efekti eyleme göre belirlenir (Sonar).
+fn zamanli_ac(
+    komutlar: &mut Vec<Komut>,
+    kaynaklar: &mut HashMap<String, String>,
+    tetik: &str,
+    kaynak: &str,
+) -> Result<(), String> {
+    let Some(asil) = komutlar.last().cloned() else { return Ok(()) };
+    for (soz, dakika) in ZAMAN_SURELERI {
+        let eylem = Eylem::Zamanla {
+            dakika,
+            eylem: Box::new(asil.eylem.clone()),
+            gosterim: asil.gosterim.clone(),
+        };
+        ekle(
+            komutlar, kaynaklar, tetik,
+            format!("{soz} sonra {}", asil.ifade),
+            Some(format!("{soz} sonra: {}", asil.gosterim)),
+            asil.riskli, eylem, None, format!("{kaynak} ({soz} sonra)"),
+        )?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

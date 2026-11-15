@@ -954,6 +954,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kurulum"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "windows",
+ "zip",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"

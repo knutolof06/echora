@@ -10,12 +10,17 @@
 //!
 //! Güncelleme: `guncelleme` modülü ayrı iş parçacığında denetler/indirir; sonuç `WM_GUNCELLEME` ile
 //! gelir. Kurulum yalnız kullanıcı onayıyla: menü, balon ve Stüdyo isteği aynı evet/hayır kutusundan geçer.
+//!
+//! Kısayollar (`RegisterHotKey` → `WM_HOTKEY`), bas-konuş tuş penceresi, zamanlı komutlar
+//! (`SetTimer`) ve çift alkış da komutu aynı yoldan (`komutu_baslat`) çalıştırır: bekleyen
+//! efekt-sonrası eylem kuralları, efektlerin kapalı olması, kuru kip ve geri al kaydı hepsine
+//! uygulanır. Kısayol ve zamanlayıcı dinleme duraklatılmışken de çalışır (bkz. `KomutKaynagi`).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use komut::efekt::{Efekt, EfektAyari, Olay};
 use komut::{Ayarlar, Komut};
@@ -38,13 +43,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE,
     WM_APP, WM_COPYDATA, WM_DESTROY, WM_ENDSESSION, WM_LBUTTONUP, WM_NULL, WM_QUERYENDSESSION, WM_RBUTTONUP,
     WM_TIMER, WNDCLASSW, WS_OVERLAPPED, EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PBT_APMRESUMEAUTOMATIC,
-    WM_CLOSE, WM_POWERBROADCAST,
+    WM_CLOSE, WM_HOTKEY, WM_POWERBROADCAST,
 };
 
 use crate::dagitim::{
     bekleyen_karari, dagit, eylem_ozeti, komut_karari, BekleyenKarari, Etki, GeriAlSonucu, GeriAlYigini, GeriKaydi,
-    Kayit, KomutKarari, PencereImzaci, Sonuc,
+    Kayit, KomutKaynagi, KomutKarari, PencereImzaci, Sonuc, Ters,
 };
+use crate::kisayollar::{self, KisayolHedefi, KisayolKayitlari};
+use crate::tus_penceresi::{BasisKarari, TusPenceresi};
+use crate::zamanlayici::{self, DolumKarari, Zamanlayici, ZamanlayiciListesi};
 use crate::dinleyici::{DinleyiciKolu, Durum, UiIleti, UiKuyrugu, WM_DINLEYICI};
 use crate::guncelleme::{self, DenetimSonucu, KurulumKarari, Surum};
 use crate::gunluk;
@@ -80,6 +88,13 @@ const GUNCELLEME_ZAMANLAYICI: usize = 5;
 const GUNCELLEME_ILK_MS: u32 = 60_000;
 /// Sonraki tetiklenişler saatlik; denetim kararı `son_denetim`e göre (24 saat).
 const GUNCELLEME_SAATLIK_MS: u32 = 60 * 60 * 1000;
+/// Zamanlı komutların ipucu/uyarı tıkı (yalnız zamanlayıcı varken kurulur).
+const ZAMANLAYICI_TIK: usize = 6;
+/// Bas-konuş tuş penceresinin süre dolumu.
+const TUS_PENCERESI_ZAMANLAYICI: usize = 7;
+/// Zamanlı komutların dolum zamanlayıcıları: `DOLUM_TABAN + kimlik % DOLUM_ARALIK`.
+const DOLUM_TABAN: usize = 0x1000;
+const DOLUM_ARALIK: usize = 0x1000;
 /// Efekt süresine eklenen pay: bu süre içinde `bitince` gelmezse bekleyen atılır.
 const BEKLEYEN_PAYI: Duration = Duration::from_secs(3);
 /// Pencere sınıfları. Stüdyo gerçek örneği `Echora.Tepsi` ile, kuru örneği `Echora.Tepsi.Kuru` ile bulur
@@ -99,6 +114,11 @@ const KOMUT_EFEKTLER: usize = 7;
 const KOMUT_IPUCU_EFEKTLERI: usize = 8;
 const KOMUT_GUNCELLEME_DENETLE: usize = 9;
 const KOMUT_GUNCELLEME_KUR: usize = 10;
+const KOMUT_ZAMANLAYICI_HEPSI: usize = 11;
+const KOMUT_PALET: usize = 12;
+/// "Zamanlayıcılar" alt menüsündeki i. öğe: `KOMUT_ZAMANLAYICI_TABAN + i` (en çok `MENU_ZAMANLAYICI`).
+const KOMUT_ZAMANLAYICI_TABAN: usize = 100;
+const MENU_ZAMANLAYICI: usize = 20;
 
 /// Tepsi simgelerinin kaynak kimlikleri (`build.rs` `SIMGELER` ile aynı).
 const SIMGE_NORMAL: u16 = 101;
@@ -114,8 +134,9 @@ pub struct Bekleyen {
     komut: Komut,
     /// Bu andan sonra gelen "efekt bitti" bayattır (UI uzun süre meşgul kaldı).
     son_tarih: Instant,
-    /// Stüdyo'dan geldi: dinlemenin duraklatılmış olması onu durdurmaz (bkz. `ipc_komutlari`).
-    studyodan: bool,
+    /// Komutun kaynağı: Stüdyo/kısayol/zamanlayıcıdan geldiyse dinlemenin duraklatılmış olması onu
+    /// durdurmaz (bkz. `KomutKaynagi::duraklatmayi_asar`).
+    kaynak: KomutKaynagi,
 }
 
 /// Ayarların yeniden yüklenme nedeni.
@@ -185,6 +206,12 @@ pub struct Uygulama {
     ilk_denetim_yapildi: bool,
     /// Son gösterilen balon "indirildi, kurmak için tıklayın" balonu mu (tıklanınca onay sorulur).
     guncelleme_balonu: bool,
+    /// `RegisterHotKey` kayıtları.
+    kisayollar: KisayolKayitlari,
+    /// Zamanlı komutlar (kalıcı değil).
+    zamanlayicilar: ZamanlayiciListesi,
+    /// Bas-konuş tuş penceresi.
+    tus_penceresi: TusPenceresi,
 }
 
 /// Tepsi simgeleri: exe'ye gömülü `.ico` kaynaklarından, küçük simge boyutunda (DPI'ye göre)
@@ -241,6 +268,9 @@ impl Uygulama {
             hazir: None,
             ilk_denetim_yapildi: false,
             guncelleme_balonu: false,
+            kisayollar: KisayolKayitlari::default(),
+            zamanlayicilar: ZamanlayiciListesi::default(),
+            tus_penceresi: TusPenceresi::default(),
             imzaci,
             ddc_kapali: Arc::new(AtomicBool::new(false)),
             sahne_studyodan: false,
@@ -306,6 +336,30 @@ fn ipucu(d: Durum) -> &'static str {
     }
 }
 
+/// Tepsi ipucu: durum satırı (tuş penceresi açıkken "dinliyor…", tuşla kipinde dinleme tuşu) ve
+/// varsa en yakın zamanlayıcı satırı.
+fn ipucu_olustur(d: Durum, tusla: Option<&str>, pencere_acik: bool, zamanlayici: Option<String>) -> String {
+    let mut s = match (d, pencere_acik, tusla) {
+        (Durum::Dinliyor | Durum::SessizSaat | Durum::TamEkran, true, _) => "Echora — dinliyor…".to_string(),
+        (Durum::Dinliyor, false, Some(t)) => format!("Echora — tuşla dinleme ({t})"),
+        _ => ipucu(d).to_string(),
+    };
+    if let Some(z) = zamanlayici {
+        s.push('\n');
+        s.push_str(&z);
+    }
+    s
+}
+
+fn ipucu_metni(u: &Uygulama) -> String {
+    let tusla = match (u.ayarlar.dinleme_kipi, &u.ayarlar.dinleme_tusu) {
+        (komut::DinlemeKipi::Tusla, Some(k)) => Some(kisayollar::gorunum(&k.metin)),
+        _ => None,
+    };
+    let zaman = u.zamanlayicilar.ipucu_satiri(Instant::now());
+    ipucu_olustur(u.durum, tusla.as_deref(), u.tus_penceresi.acik().is_some(), zaman)
+}
+
 fn simge_yukle(u: &Uygulama) -> HICON {
     let d = u.durum;
     let gomulu = match d {
@@ -340,7 +394,7 @@ fn simge_ekle(u: &mut Uygulama) {
     v.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     v.uCallbackMessage = WM_TEPSI;
     v.hIcon = simge_yukle(u);
-    dizi_doldur(&mut v.szTip, ipucu(u.durum));
+    dizi_doldur(&mut v.szTip, &ipucu_metni(u));
     // SAFETY: v tam ve geçerli doldurulmuş bir NOTIFYICONDATAW.
     u.simge_ekli = unsafe { Shell_NotifyIconW(NIM_ADD, &v).as_bool() };
     if u.simge_ekli {
@@ -383,7 +437,7 @@ fn simge_guncelle(u: &Uygulama) {
     let mut v = bildirim_verisi(u.hwnd);
     v.uFlags = NIF_ICON | NIF_TIP;
     v.hIcon = simge_yukle(u);
-    dizi_doldur(&mut v.szTip, ipucu(u.durum));
+    dizi_doldur(&mut v.szTip, &ipucu_metni(u));
     // SAFETY: yukarıdakiyle aynı.
     let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &v) };
 }
@@ -465,6 +519,22 @@ fn menu_goster(hwnd: HWND) {
     let denetleniyor = u.denetim_suruyor.load(Ordering::SeqCst);
     let hazir = u.hazir.map(|h| h.surum);
     let isaret = |acik: bool| if acik { MF_CHECKED } else { MENU_ITEM_FLAGS(0) };
+    let simdi = Instant::now();
+    // Menü açıkken zamanlayıcı dolabilir: seçim kimlikle eşlenir (yoksa iptal zararsızca atlanır).
+    let zamanlar: Vec<(u64, Vec<u16>)> = u
+        .zamanlayicilar
+        .sirali()
+        .iter()
+        .take(MENU_ZAMANLAYICI)
+        .map(|z| {
+            let kalan = zamanlayici::kalan_metni(z.bitis.saturating_duration_since(simdi));
+            (z.kimlik, genis(&format!("{} — {kalan} (iptal et)", z.gosterim)))
+        })
+        .collect();
+    let palet_metni = match &u.ayarlar.palet_tusu {
+        Some(k) => format!("Komut paleti\t{}", kisayollar::gorunum(&k.metin)),
+        None => "Komut paleti".to_string(),
+    };
 
     // SAFETY: menü bu işlevde oluşturulup yok edilir (alt menü ana menüyle birlikte); metinler
     // çağrı boyunca yaşar.
@@ -481,8 +551,24 @@ fn menu_goster(hwnd: HWND) {
         let ef2 = genis("İpucu efektleri açık");
         let gd = genis(if denetleniyor { "Güncellemeler denetleniyor…" } else { "Güncellemeleri denetle" });
         let gk = genis(&hazir.map(|s| format!("Güncellemeyi kur (v{s})")).unwrap_or_default());
+        let zm = genis("Zamanlayıcılar");
+        let zh = genis("Tümünü iptal et");
+        let pl = genis(&palet_metni);
         let _ = AppendMenuW(menu, MF_STRING, KOMUT_DURAKLAT_SURDUR, PCWSTR(d.as_ptr()));
+        if !zamanlar.is_empty() {
+            if let Ok(alt) = CreatePopupMenu() {
+                for (i, (_, metin)) in zamanlar.iter().enumerate() {
+                    let _ = AppendMenuW(alt, MF_STRING, KOMUT_ZAMANLAYICI_TABAN + i, PCWSTR(metin.as_ptr()));
+                }
+                if zamanlar.len() > 1 {
+                    let _ = AppendMenuW(alt, MF_SEPARATOR, 0, PCWSTR::null());
+                    let _ = AppendMenuW(alt, MF_STRING, KOMUT_ZAMANLAYICI_HEPSI, PCWSTR(zh.as_ptr()));
+                }
+                let _ = AppendMenuW(menu, MF_POPUP, alt.0 as usize, PCWSTR(zm.as_ptr()));
+            }
+        }
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, KOMUT_PALET, PCWSTR(pl.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, KOMUT_STUDYO, PCWSTR(s.as_ptr()));
         if let Ok(alt) = CreatePopupMenu() {
             let _ = AppendMenuW(alt, MF_STRING | isaret(efektler), KOMUT_EFEKTLER, PCWSTR(ef1.as_ptr()));
@@ -538,6 +624,15 @@ fn menu_goster(hwnd: HWND) {
             // SAFETY: pencere bu iş parçacığına ait.
             let _ = unsafe { DestroyWindow(hwnd) };
         }
+        KOMUT_PALET => palet_ac(u),
+        KOMUT_ZAMANLAYICI_HEPSI => {
+            zamanlayicilari_iptal(u, "tepsi menüsü");
+        }
+        n if (KOMUT_ZAMANLAYICI_TABAN..KOMUT_ZAMANLAYICI_TABAN + MENU_ZAMANLAYICI).contains(&n) => {
+            if let Some((kimlik, _)) = zamanlar.get(n - KOMUT_ZAMANLAYICI_TABAN) {
+                zamanlayici_iptal(u, *kimlik, "tepsi menüsü");
+            }
+        }
         _ => {}
     }
 }
@@ -586,12 +681,21 @@ fn cikis_hazirla(u: &mut Uygulama) {
     u.kapaniyor = true;
     bekleyenleri_kes(u, "çıkılıyor");
     u.ipc_kuyrugu.clear();
+    u.tus_penceresi.hepsini_kapat();
+    // Zamanlayıcılar kalıcı değildir: kapanınca kaybolur.
+    let kalan = u.zamanlayicilar.hepsini_iptal();
+    if !kalan.is_empty() {
+        let adlar: Vec<&str> = kalan.iter().map(|z| z.gosterim.as_str()).collect();
+        gunluk::yaz(&format!("{} zamanlayıcı çalıştırılmadı (çıkılıyor): {}", kalan.len(), adlar.join(", ")));
+    }
 }
 
 fn duraklat(u: &mut Uygulama) {
     // Bayrak, dinleyiciye haber gitmeden ONCE ayarlanir: kuyrukta bekleyen komutlar atilsin.
     u.duraklatildi = true;
     bekleyenleri_kes(u, "dinleme duraklatıldı");
+    // Zamanlayıcılar duraklatmada sürer (önceden kurulmuş, menüden iptal edilebilir).
+    tus_penceresi_kapat(u, None, "dinleme duraklatıldı");
     // `Sahne::kapat` burada ÇAĞRILMAZ (UI'yı bloklayabilir): sürmekte olan efekt kendiliğinden
     // biter, gecikmiş "bitince"si jeton denetimiyle atılır; motor 2 sn boşta kalınca kapanır.
     if let Some(kol) = &u.kol {
@@ -638,6 +742,9 @@ fn ayarlari_uygula(u: &mut Uygulama, a: Ayarlar) {
         // SAFETY: pencere bu iş parçacığına ait; aynı kimlikli zamanlayıcı yenilenir.
         let _ = unsafe { SetTimer(Some(u.hwnd), GUNCELLEME_ZAMANLAYICI, GUNCELLEME_ILK_MS, None) };
     }
+    kisayollari_kaydet(u);
+    // Dinleme kipi / tuşu değişmiş olabilir.
+    simge_guncelle(u);
 }
 
 // --- Tepsi menüsündeki efekt anahtarları ---
@@ -1039,7 +1146,7 @@ fn efekt_bitti(hwnd: HWND, jeton: u64) {
     let Some(b) = bekleyeni_al(u) else { return };
     // Bayat komut denetimi burada da: efekt sürerken duraklatıldıysa ya da çıkılıyorsa çalışmaz.
     // (Duraklatma bekleyeni zaten siler; bu denetim duraklatılmışken gelmiş komutlar içindir.)
-    if (u.duraklatildi && !b.studyodan) || u.kapaniyor {
+    if (u.duraklatildi && !b.kaynak.duraklatmayi_asar()) || u.kapaniyor {
         gunluk::yaz(&format!("\"{}\" çalıştırılmadı (efekt sürerken duraklatıldı)", b.komut.gosterim));
         return;
     }
@@ -1047,7 +1154,7 @@ fn efekt_bitti(hwnd: HWND, jeton: u64) {
         gunluk::yaz(&format!("bayat komut atıldı: {}", b.komut.gosterim));
         return;
     }
-    eylemi_uygula(u, &b.komut.eylem, &b.komut.gosterim, b.studyodan);
+    eylemi_uygula(u, &b.komut.eylem, &b.komut.gosterim, b.kaynak);
 }
 
 // --- Komutlar ---
@@ -1059,8 +1166,8 @@ fn hata_bildir(u: &mut Uygulama, gosterim: &str, hata: &str) {
 }
 
 /// Komutu başlatır: efekt + eylem (+ geri al kaydı). `false`: çıkış başladı, kuyruğun kalanı atılmalı.
-fn komutu_baslat(u: &mut Uygulama, komut: Komut, studyodan: bool) -> bool {
-    gunluk::yaz(&format!("komut{}: {}", if studyodan { " (Stüdyo)" } else { "" }, komut.gosterim));
+fn komutu_baslat(u: &mut Uygulama, komut: Komut, kaynak: KomutKaynagi) -> bool {
+    gunluk::yaz(&format!("komut{}: {}", kaynak.etiket(), komut.gosterim));
     let t = tohum(u);
     let (efekt, ayar) = komut.efekt_coz(&u.ayarlar, t);
     let metin = Some(komut.gosterim.clone());
@@ -1082,7 +1189,7 @@ fn komutu_baslat(u: &mut Uygulama, komut: Komut, studyodan: bool) -> bool {
         }
         // Duraklatma efektinin kendisi görünsün diye önce eylem, sonra efekt.
         (_, komut::Eylem::DinlemeyiDuraklat) => {
-            let devam = eylemi_uygula(u, &komut.eylem, &komut.gosterim, studyodan);
+            let devam = eylemi_uygula(u, &komut.eylem, &komut.gosterim, kaynak);
             efekt_oynat(u, efekt, ayar, metin, 0);
             return devam;
         }
@@ -1094,7 +1201,7 @@ fn komutu_baslat(u: &mut Uygulama, komut: Komut, studyodan: bool) -> bool {
         u.sayac = u.sayac.wrapping_add(1);
         let jeton = u.sayac.max(1);
         let sure = Duration::from_millis(u64::from(ayar.sure_ms)) + BEKLEYEN_PAYI;
-        u.bekleyen = Some(Bekleyen { jeton, komut, son_tarih: Instant::now() + sure, studyodan });
+        u.bekleyen = Some(Bekleyen { jeton, komut, son_tarih: Instant::now() + sure, kaynak });
         // SAFETY: pencere bu iş parçacığına ait; aynı kimlikli zamanlayıcı yenilenir.
         let _ = unsafe { SetTimer(Some(u.hwnd), BEKLEYEN_ZAMANLAYICI, sure.as_millis() as u32, None) };
         efekt_oynat(u, efekt, ayar, metin, jeton);
@@ -1102,7 +1209,7 @@ fn komutu_baslat(u: &mut Uygulama, komut: Komut, studyodan: bool) -> bool {
     }
     // EfektsizCalistir'da efekt_oynat bekleyen varken zaten oynatmaz.
     efekt_oynat(u, efekt, ayar, metin, 0);
-    eylemi_uygula(u, &komut.eylem, &komut.gosterim, studyodan)
+    eylemi_uygula(u, &komut.eylem, &komut.gosterim, kaynak)
 }
 
 /// Ekran durumu bayrağı: DDC/CI ile kapatma `true`, ekranları açma `false`.
@@ -1115,7 +1222,7 @@ fn ddc_bayragi(bayrak: &AtomicBool, eylem: &komut::Eylem, sonuc: &Sonuc) {
 }
 
 /// Eylemi `Sistem` üzerinde çalıştırır ve etkisini uygular. `false`: çıkış başladı.
-fn eylemi_uygula(u: &mut Uygulama, eylem: &komut::Eylem, gosterim: &str, studyodan: bool) -> bool {
+fn eylemi_uygula(u: &mut Uygulama, eylem: &komut::Eylem, gosterim: &str, kaynak: KomutKaynagi) -> bool {
     let Some(s) = u.sistem.as_mut() else { return true };
     let sonuc = match dagit(s.sistem(), &*u.imzaci, eylem) {
         Ok(r) => r,
@@ -1140,7 +1247,13 @@ fn eylemi_uygula(u: &mut Uygulama, eylem: &komut::Eylem, gosterim: &str, studyod
         Etki::GeriAl => geri_al(u, None),
         Etki::StudyoyuAc => studyo_ac(u, true),
         Etki::YenidenYukle => ayarlari_yeniden_yukle(u, Kaynak::Kullanici),
-        Etki::Sahne(ad) => sahne_baslat(u, &ad, studyodan),
+        Etki::Sahne(ad) => sahne_baslat(u, &ad, kaynak.duraklatmayi_asar()),
+        Etki::Zamanla { dakika, eylem, gosterim: asil } => zamanlayici_kur(u, dakika, eylem, &asil, gosterim),
+        Etki::ZamanlayicilariIptal => {
+            if zamanlayicilari_iptal(u, gosterim) == 0 {
+                balon(u, "Echora", "Kurulu zamanlayıcı yok.", false);
+            }
+        }
     }
     true
 }
@@ -1156,6 +1269,11 @@ fn geri_al(u: &mut Uygulama, efekt: Option<(Efekt, EfektAyari, Option<String>)>)
     u.geri_al.eskileri_at(Instant::now());
     let yapilabilir = matches!(u.geri_al.son(), Some(k) if k.kayit != Kayit::Alinamaz);
     let ekran_acar = matches!(u.geri_al.son(), Some(GeriKaydi { kayit: Kayit::Ters(t), .. }) if t.ekran_acar());
+    // Zamanlı komutun geri alınması o zamanlayıcıyı iptal eder (Sistem'e dokunulmaz).
+    let zamanlayici = match u.geri_al.son() {
+        Some(GeriKaydi { kayit: Kayit::Ters(Ters::Zamanlayici(k)), .. }) => Some(*k),
+        _ => None,
+    };
     if yapilabilir {
         if let Some((e, a, m)) = efekt {
             efekt_oynat(u, e, a, m, 0);
@@ -1169,6 +1287,9 @@ fn geri_al(u: &mut Uygulama, efekt: Option<(Efekt, EfektAyari, Option<String>)>)
                 u.ddc_kapali.store(false, Ordering::Relaxed);
             }
             gunluk::yaz(&format!("geri alındı: {g}"));
+            if let Some(k) = zamanlayici {
+                zamanlayici_iptal(u, k, "geri al");
+            }
         }
         GeriAlSonucu::Basarisiz { gosterim, hata } => hata_bildir(u, &format!("geri al ({gosterim})"), hata),
         GeriAlSonucu::Bos | GeriAlSonucu::Alinamaz(_) | GeriAlSonucu::PencereYok(_) => {
@@ -1220,6 +1341,13 @@ fn sahne_ilerle(u: &mut Uygulama) {
             match etki {
                 Some(Etki::StudyoyuAc) => studyo_ac(u, true),
                 Some(Etki::YenidenYukle) => ayarlari_yeniden_yukle(u, Kaynak::Kullanici),
+                Some(Etki::Zamanla { dakika, eylem, gosterim }) => {
+                    let ozet = eylem_ozeti(&e);
+                    zamanlayici_kur(u, dakika, eylem, &gosterim, &ozet);
+                }
+                Some(Etki::ZamanlayicilariIptal) => {
+                    zamanlayicilari_iptal(u, "sahne");
+                }
                 _ => {}
             }
             ileti_at(u.hwnd, WM_SAHNE_ADIMI, u.sahne_nesil as usize);
@@ -1262,9 +1390,19 @@ fn sahneyi_bitir(u: &mut Uygulama, kesildi: bool) {
 /// örnekten açılan Stüdyo'nun ortamına `ECHORA_KURU=1` konur: Stüdyo "Dene"yi `Echora.Tepsi.Kuru`
 /// penceresine gönderir, gerçek örneğe değil. Gerçek kipte değişken (miras kalmışsa) kaldırılır.
 pub fn studyo_sureci_baslat(ayar: Option<&Path>, kuru: bool) -> Result<(), String> {
+    alt_surec_baslat("--studyo", ayar, kuru).map_err(|h| format!("Stüdyo başlatılamadı: {h}"))
+}
+
+/// `echora.exe --palet [--ayar …]`: komut paleti ayrı süreçte (tek örnek; açıksa öne gelir).
+/// Kuru örnekten açılan palet komutları kuru örneğe gönderir (`ECHORA_KURU=1`).
+pub fn palet_sureci_baslat(ayar: Option<&Path>, kuru: bool) -> Result<(), String> {
+    alt_surec_baslat("--palet", ayar, kuru).map_err(|h| format!("Komut paleti başlatılamadı: {h}"))
+}
+
+fn alt_surec_baslat(kip: &str, ayar: Option<&Path>, kuru: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|h| format!("exe yolu alınamadı: {h}"))?;
     let mut komut = std::process::Command::new(&exe);
-    komut.arg("--studyo");
+    komut.arg(kip);
     if let Some(a) = ayar {
         komut.arg("--ayar").arg(std::path::absolute(a).unwrap_or_else(|_| a.to_path_buf()));
     }
@@ -1274,7 +1412,19 @@ pub fn studyo_sureci_baslat(ayar: Option<&Path>, kuru: bool) -> Result<(), Strin
         komut.env_remove("ECHORA_KURU");
     }
     // `Child` düşünce süreç sürer; beklenmez.
-    komut.spawn().map(drop).map_err(|h| format!("Stüdyo başlatılamadı: {h}"))
+    komut.spawn().map(drop).map_err(|h| h.to_string())
+}
+
+/// Palet tuşu ya da tepsi menüsü: kullanıcının açık isteği (kuru kipte de açılır; komutları kuru
+/// örneğe gider).
+fn palet_ac(u: &mut Uygulama) {
+    match palet_sureci_baslat(u.ayar_arg.as_deref(), u.kuru) {
+        Ok(()) => gunluk::yaz("komut paleti açılıyor"),
+        Err(h) => {
+            gunluk::yaz(&format!("HATA: {h}"));
+            balon(u, "Echora: komut paleti açılamadı", &h, true);
+        }
+    }
 }
 
 /// `eylemden`: sesli/IPC komutla mı istendi. Kuru kipte komut yolu hiçbir şey başlatmaz; tepsi
@@ -1374,10 +1524,252 @@ fn ipc_komutlari(hwnd: HWND) {
             u.ipc_kuyrugu.clear();
             return;
         }
-        if !komutu_baslat(u, k, true) {
+        if !komutu_baslat(u, k, KomutKaynagi::Studyo) {
             return;
         }
     }
+}
+
+// --- Kısayollar ve bas-konuş ---
+
+/// Ayarların istediği kısayolları kaydeder (değişmeyenlere dokunulmaz). Başka uygulamanın tuttuğu
+/// kısayollar için tek balon.
+fn kisayollari_kaydet(u: &mut Uygulama) {
+    let istenen = kisayollar::istenenler(&u.ayarlar);
+    let r = u.kisayollar.uygula(u.hwnd, &istenen);
+    if !r.eklenen.is_empty() {
+        gunluk::yaz(&format!("kısayollar kaydedildi: {}", r.eklenen.join(", ")));
+    }
+    if !r.mesgul.is_empty() {
+        let m = kisayollar::mesgul_metni(&r.mesgul);
+        gunluk::yaz(&format!("UYARI: {m}"));
+        balon(u, "Echora: kısayol kullanılamıyor", &m, true);
+    }
+}
+
+/// `WM_HOTKEY`. Komut kısayolu tetiksiz ve dinleme duraklatılmış olsa da çalışır (kullanıcı tuşa
+/// bastı); sessiz saat / tam ekran engeli uygulanmaz.
+fn kisayol_basildi(hwnd: HWND, kimlik: i32) {
+    let Some(u) = uyg(hwnd) else { return };
+    if u.kapaniyor {
+        return;
+    }
+    let Some(hedef) = u.kisayollar.hedef(kimlik).cloned() else { return };
+    match hedef {
+        KisayolHedefi::Komut(ifade) => {
+            let Some(k) = u.ayarlar.komut_bul(&ifade).cloned() else {
+                gunluk::yaz("UYARI: kısayolun ifadesi hiçbir komutla eşleşmedi");
+                return;
+            };
+            if u.sistem.is_some() {
+                komutu_baslat(u, k, KomutKaynagi::Kisayol);
+            }
+        }
+        KisayolHedefi::Dinleme => tus_penceresi_bas(u),
+        KisayolHedefi::Palet => palet_ac(u),
+    }
+}
+
+/// Dinleme tuşu: tuş penceresini açar ya da (açıksa) kapatır.
+fn tus_penceresi_bas(u: &mut Uygulama) {
+    match u.tus_penceresi.basildi() {
+        BasisKarari::Ac(nesil) => {
+            if u.duraklatildi || !u.durum.dinliyor_mu() {
+                u.tus_penceresi.hepsini_kapat();
+                gunluk::yaz("tuş penceresi açılmadı: dinleme kapalı");
+                balon(u, "Echora", "Dinleme kapalı; tuşla dinlemek için önce dinlemeyi sürdürün.", false);
+                return;
+            }
+            let sn = u.ayarlar.dinleme_suresi_sn.clamp(2, 30);
+            // SAFETY: pencere bu iş parçacığına ait; aynı kimlikli zamanlayıcı yenilenir.
+            let _ = unsafe { SetTimer(Some(u.hwnd), TUS_PENCERESI_ZAMANLAYICI, sn * 1000, None) };
+            if let Some(kol) = &u.kol {
+                kol.tus_penceresi(Some(nesil));
+            }
+            gunluk::yaz(&format!("tuş penceresi açıldı ({sn} sn)"));
+            simge_guncelle(u);
+            // Kısık Kenar Nabzı: "dinliyorum" (efektler kapalıysa ya da bekleyen varsa oynamaz).
+            if u.ayarlar.efekt_oynasin_mi() {
+                let mut a = u.ayarlar.efekt_ayari(Efekt::KenarNabzi);
+                a.siddet *= 0.4;
+                efekt_oynat(u, Efekt::KenarNabzi, a, None, 0);
+            }
+        }
+        BasisKarari::Kapat => tus_penceresi_kapandi(u, "ikinci basış"),
+    }
+}
+
+/// `Some(n)`: yalnız `n` nesilli pencere açıksa kapatır; `None`: açık pencereyi kapatır.
+fn tus_penceresi_kapat(u: &mut Uygulama, nesil: Option<u64>, neden: &str) {
+    let kapandi = match nesil {
+        Some(n) => u.tus_penceresi.kapat(n),
+        None => u.tus_penceresi.hepsini_kapat(),
+    };
+    if kapandi {
+        tus_penceresi_kapandi(u, neden);
+    }
+}
+
+fn tus_penceresi_kapandi(u: &mut Uygulama, neden: &str) {
+    // SAFETY: pencere bu iş parçacığına ait.
+    let _ = unsafe { KillTimer(Some(u.hwnd), TUS_PENCERESI_ZAMANLAYICI) };
+    if let Some(kol) = &u.kol {
+        kol.tus_penceresi(None);
+    }
+    gunluk::yaz(&format!("tuş penceresi kapandı ({neden})"));
+    simge_guncelle(u);
+}
+
+/// Çift alkış: ayardaki ifadenin komutu tetiksiz çalışır (riskli olsa da).
+fn alkis_komutu(u: &mut Uygulama) -> bool {
+    if !u.ayarlar.alkis.acik {
+        return true;
+    }
+    match u.ayarlar.komut_bul(&u.ayarlar.alkis.ifade).cloned() {
+        Some(k) => {
+            gunluk::yaz("çift alkış algılandı");
+            komutu_baslat(u, k, KomutKaynagi::Alkis)
+        }
+        None => {
+            gunluk::yaz("UYARI: alkış ifadesi hiçbir komutla eşleşmedi");
+            true
+        }
+    }
+}
+
+// --- Zamanlı komutlar ---
+
+fn dolum_kimligi(kimlik: u64) -> usize {
+    DOLUM_TABAN + (kimlik as usize % DOLUM_ARALIK)
+}
+
+fn ms(d: Duration) -> u32 {
+    u32::try_from(d.as_millis()).unwrap_or(u32::MAX).max(1)
+}
+
+/// `Eylem::Zamanla`: zamanlayıcıyı kurar ve geri al kaydını ekler (geri al → iptal).
+fn zamanlayici_kur(u: &mut Uygulama, dakika: u32, eylem: komut::Eylem, asil: &str, komut_gosterimi: &str) {
+    let k = u.zamanlayicilar.ekle(dakika, eylem, asil, Instant::now(), SystemTime::now());
+    let sure = Duration::from_secs(u64::from(dakika) * 60);
+    // SAFETY: pencere bu iş parçacığına ait.
+    let _ = unsafe { SetTimer(Some(u.hwnd), dolum_kimligi(k), ms(sure), None) };
+    u.geri_al.ekle(komut_gosterimi, Kayit::Ters(Ters::Zamanlayici(k)));
+    gunluk::yaz(&format!("zamanlayıcı kuruldu: {asil} — {dakika} dk sonra (#{k})"));
+    zamanlayici_tik_kur(u);
+    simge_guncelle(u);
+}
+
+/// İpucu/uyarı tıkı: yalnız zamanlayıcı varken, sıradaki değişime kadar.
+fn zamanlayici_tik_kur(u: &mut Uygulama) {
+    // SAFETY: pencere bu iş parçacığına ait; aynı kimlikli zamanlayıcı yenilenir.
+    unsafe {
+        match u.zamanlayicilar.sonraki_tik(Instant::now()) {
+            Some(d) => {
+                let _ = SetTimer(Some(u.hwnd), ZAMANLAYICI_TIK, ms(d), None);
+            }
+            None => {
+                let _ = KillTimer(Some(u.hwnd), ZAMANLAYICI_TIK);
+            }
+        }
+    }
+}
+
+/// Listeden çıkmış zamanlayıcının Win32 zamanlayıcısını ve geri al kaydını temizler.
+fn zamanlayici_temizle(u: &mut Uygulama, z: &Zamanlayici) {
+    // SAFETY: pencere bu iş parçacığına ait.
+    let _ = unsafe { KillTimer(Some(u.hwnd), dolum_kimligi(z.kimlik)) };
+    let kimlik = z.kimlik;
+    u.geri_al.sil(|k| *k == Kayit::Ters(Ters::Zamanlayici(kimlik)));
+}
+
+fn zamanlayici_iptal(u: &mut Uygulama, kimlik: u64, neden: &str) -> bool {
+    let Some(z) = u.zamanlayicilar.iptal(kimlik) else { return false };
+    zamanlayici_temizle(u, &z);
+    gunluk::yaz(&format!("zamanlayıcı iptal edildi: {} (#{}, {neden})", z.gosterim, z.kimlik));
+    zamanlayici_tik_kur(u);
+    simge_guncelle(u);
+    true
+}
+
+/// Tümünü iptal eder; iptal edilen sayısını döner.
+fn zamanlayicilari_iptal(u: &mut Uygulama, neden: &str) -> usize {
+    let liste = u.zamanlayicilar.hepsini_iptal();
+    for z in &liste {
+        zamanlayici_temizle(u, z);
+    }
+    if liste.is_empty() {
+        gunluk::yaz(&format!("iptal edilecek zamanlayıcı yok ({neden})"));
+    } else {
+        let adlar: Vec<&str> = liste.iter().map(|z| z.gosterim.as_str()).collect();
+        gunluk::yaz(&format!("zamanlayıcılar iptal edildi ({}): {} ({neden})", liste.len(), adlar.join(", ")));
+    }
+    zamanlayici_tik_kur(u);
+    simge_guncelle(u);
+    liste.len()
+}
+
+/// Dakika değişimi (ipucu) ve son dakika uyarısı.
+fn zamanlayici_tik(hwnd: HWND) {
+    // SAFETY: pencere bu iş parçacığına ait.
+    let _ = unsafe { KillTimer(Some(hwnd), ZAMANLAYICI_TIK) };
+    let Some(u) = uyg(hwnd) else { return };
+    if u.kapaniyor {
+        return;
+    }
+    for (kimlik, gosterim) in u.zamanlayicilar.uyarilacaklar(Instant::now()) {
+        gunluk::yaz(&format!("zamanlayıcı 1 dakika içinde dolacak: {gosterim} (#{kimlik})"));
+        balon(u, "Echora: zamanlayıcı", &zamanlayici::uyari_metni(&gosterim), false);
+    }
+    simge_guncelle(u);
+    zamanlayici_tik_kur(u);
+}
+
+/// Bir dolum zamanlayıcısı uyandı: süresi dolanların (birikmiş olanlar dahil) asıl eylemi normal
+/// yoldan (efektiyle) çalışır. Uykudan dolayı çok geç kalan çalıştırılmaz.
+fn zamanlayici_doldu(hwnd: HWND, kimlik_win: usize) {
+    // SAFETY: pencere bu iş parçacığına ait.
+    let _ = unsafe { KillTimer(Some(hwnd), kimlik_win) };
+    let Some(u) = uyg(hwnd) else { return };
+    if u.kapaniyor {
+        return;
+    }
+    let simdi = Instant::now();
+    let dolanlar = u.zamanlayicilar.dolanlar(simdi);
+    // Bu Win32 zamanlayıcısının sahibi henüz dolmadıysa (erken uyanma) kalan süreyle yeniden kur.
+    let erken: Vec<Duration> = u
+        .zamanlayicilar
+        .sirali()
+        .iter()
+        .filter(|z| dolum_kimligi(z.kimlik) == kimlik_win)
+        .map(|z| z.bitis.saturating_duration_since(simdi))
+        .collect();
+    for kalan in erken {
+        // SAFETY: yukarıdakiyle aynı.
+        let _ = unsafe { SetTimer(Some(hwnd), kimlik_win, ms(kalan), None) };
+    }
+    for z in dolanlar {
+        zamanlayici_temizle(u, &z);
+        match zamanlayici::dolum_karari(z.bitis_duvar, SystemTime::now()) {
+            DolumKarari::Gecikti => {
+                gunluk::yaz(&format!("zamanlayıcı çok gecikti (uyku?); çalıştırılmadı: {}", z.gosterim));
+                balon(
+                    u,
+                    "Echora: zamanlayıcı çalıştırılmadı",
+                    &format!("\"{}\" zamanı bilgisayar uykudayken geçti; çalıştırılmadı.", z.gosterim),
+                    false,
+                );
+            }
+            DolumKarari::Calistir => {
+                gunluk::yaz(&format!("zamanlayıcı doldu: {} (#{})", z.gosterim, z.kimlik));
+                let k = zamanlayici::asil_komut(&u.ayarlar, &z.eylem, &z.gosterim);
+                if u.sistem.is_some() && !komutu_baslat(u, k, KomutKaynagi::Zamanlayici) {
+                    return;
+                }
+            }
+        }
+    }
+    zamanlayici_tik_kur(u);
+    simge_guncelle(u);
 }
 
 // --- Dinleyici iletileri ---
@@ -1393,7 +1785,7 @@ fn ileti_isle(hwnd: HWND, ileti: UiIleti) -> bool {
                 olay_oynat(u, o);
             }
         }
-        UiIleti::Komut { komut, olusma } => {
+        UiIleti::Komut { komut, olusma, pencere } => {
             match komut_karari(olusma, Instant::now(), u.duraklatildi || u.kapaniyor) {
                 KomutKarari::Bayat => {
                     gunluk::yaz(&format!("bayat komut atıldı: {}", komut.gosterim));
@@ -1405,7 +1797,25 @@ fn ileti_isle(hwnd: HWND, ileti: UiIleti) -> bool {
             if u.sistem.is_none() {
                 return true;
             }
-            return komutu_baslat(u, komut, false);
+            // Tuş penceresinde ilk tanınan komut pencereyi kapatır (eski pencerenin komutu yenisini değil).
+            if let Some(n) = pencere {
+                tus_penceresi_kapat(u, Some(n), "komut çalıştı");
+            }
+            return komutu_baslat(u, komut, KomutKaynagi::Ses);
+        }
+        UiIleti::Alkis { olusma } => {
+            match komut_karari(olusma, Instant::now(), u.duraklatildi || u.kapaniyor) {
+                KomutKarari::Bayat => {
+                    gunluk::yaz("bayat çift alkış atıldı");
+                    return !u.kapaniyor;
+                }
+                KomutKarari::Duraklatilmis => return !u.kapaniyor,
+                KomutKarari::Calistir => {}
+            }
+            if u.sistem.is_none() {
+                return true;
+            }
+            return alkis_komutu(u);
         }
     }
     true
@@ -1453,6 +1863,27 @@ unsafe extern "system" fn pencere_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
         }
         WM_TIMER if wp.0 == GUNCELLEME_ZAMANLAYICI => {
             guncelleme_zamani(hwnd);
+            LRESULT(0)
+        }
+        WM_HOTKEY => {
+            kisayol_basildi(hwnd, wp.0 as i32);
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == TUS_PENCERESI_ZAMANLAYICI => {
+            let _ = KillTimer(Some(hwnd), TUS_PENCERESI_ZAMANLAYICI);
+            if let Some(u) = uyg(hwnd) {
+                if let Some(n) = u.tus_penceresi.acik() {
+                    tus_penceresi_kapat(u, Some(n), "süre doldu");
+                }
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == ZAMANLAYICI_TIK => {
+            zamanlayici_tik(hwnd);
+            LRESULT(0)
+        }
+        WM_TIMER if (DOLUM_TABAN..DOLUM_TABAN + DOLUM_ARALIK).contains(&wp.0) => {
+            zamanlayici_doldu(hwnd, wp.0);
             LRESULT(0)
         }
         WM_DINLEYICI => {
@@ -1541,6 +1972,7 @@ unsafe extern "system" fn pencere_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
         WM_DESTROY => {
             if let Some(u) = uyg(hwnd) {
                 cikis_hazirla(u);
+                u.kisayollar.hepsini_birak(hwnd);
                 simge_sil(u);
             }
             PostQuitMessage(0);
@@ -1593,6 +2025,8 @@ pub fn pencere_olustur(u: *mut Uygulama) -> Result<HWND, String> {
         (*u).hwnd = hwnd;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, u as isize);
         simge_ekle(&mut *u);
+        // Simgeden sonra: "kısayol kullanılıyor" balonu gösterilebilsin.
+        kisayollari_kaydet(&mut *u);
         Ok(hwnd)
     }
 }
@@ -1677,5 +2111,32 @@ mod testler {
             assert!(ipucu(d).encode_utf16().count() < 128);
         }
         assert_eq!(ipucu(Durum::SessizSaat), "Echora — sessiz saat");
+    }
+
+    #[test]
+    fn ipucu_tusla_pencere_ve_zamanlayici() {
+        assert_eq!(ipucu_olustur(Durum::Dinliyor, None, false, None), "Echora — dinliyor");
+        assert_eq!(
+            ipucu_olustur(Durum::Dinliyor, Some("Ctrl+Alt+Boşluk"), false, None),
+            "Echora — tuşla dinleme (Ctrl+Alt+Boşluk)"
+        );
+        assert_eq!(ipucu_olustur(Durum::Dinliyor, Some("Ctrl+Alt+Boşluk"), true, None), "Echora — dinliyor…");
+        assert_eq!(ipucu_olustur(Durum::Dinliyor, None, true, None), "Echora — dinliyor…");
+        // Duraklatılmışken tuşla kip metni gösterilmez.
+        assert_eq!(ipucu_olustur(Durum::Duraklatildi, Some("Ctrl+Alt+Boşluk"), false, None), "Echora — duraklatıldı");
+        let z = ipucu_olustur(Durum::Dinliyor, None, false, Some("⏲ Bilgisayarı uyut — 29 dk".into()));
+        assert_eq!(z, "Echora — dinliyor\n⏲ Bilgisayarı uyut — 29 dk");
+        assert!(z.encode_utf16().count() < 128);
+    }
+
+    #[test]
+    fn dolum_kimlikleri_aralikta() {
+        for k in [1u64, 2, 0xFFF, 0x1000, 0x1001, u64::MAX] {
+            let id = dolum_kimligi(k);
+            assert!((DOLUM_TABAN..DOLUM_TABAN + DOLUM_ARALIK).contains(&id), "{k}");
+            assert!(![ZAMANLAYICI_SURE, SIMGE_ZAMANLAYICI, SAHNE_ZAMANLAYICI, BEKLEYEN_ZAMANLAYICI, GUNCELLEME_ZAMANLAYICI, ZAMANLAYICI_TIK, TUS_PENCERESI_ZAMANLAYICI].contains(&id));
+        }
+        assert_eq!(ms(Duration::ZERO), 1);
+        assert_eq!(ms(Duration::from_secs(300)), 300_000);
     }
 }

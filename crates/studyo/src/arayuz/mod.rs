@@ -5,6 +5,7 @@ mod anlasilmayanlar;
 mod ayarlar;
 mod efektler;
 mod guncelleme;
+mod kisayollar;
 mod komutlar;
 mod kurulum;
 mod ortak;
@@ -24,12 +25,14 @@ pub use anlasilmayanlar::AnlasilmayanDurumu;
 pub use ayarlar::AyarlarDurumu;
 pub use efektler::EfektlerDurumu;
 pub use guncelleme::GuncellemePaneli;
+pub use kisayollar::KisayollarDurumu;
 pub use komutlar::KomutlarDurumu;
 pub use kurulum::KurulumDurumu;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Bolum {
     Komutlar,
+    Kisayollar,
     Efektler,
     Sahneler,
     Ayarlar,
@@ -39,8 +42,9 @@ enum Bolum {
 }
 
 impl Bolum {
-    const HEPSI: [Bolum; 7] = [
+    const HEPSI: [Bolum; 8] = [
         Bolum::Komutlar,
+        Bolum::Kisayollar,
         Bolum::Efektler,
         Bolum::Sahneler,
         Bolum::Ayarlar,
@@ -52,6 +56,7 @@ impl Bolum {
     fn ad(self) -> &'static str {
         match self {
             Bolum::Komutlar => "Komutlar",
+            Bolum::Kisayollar => "Kısayollar",
             Bolum::Efektler => "Efektler",
             Bolum::Sahneler => "Sahneler",
             Bolum::Ayarlar => "Ayarlar",
@@ -64,6 +69,7 @@ impl Bolum {
     fn aciklama(self) -> &'static str {
         match self {
             Bolum::Komutlar => "Söylenecek ifadeler ve yapılacak işler",
+            Bolum::Kisayollar => "Tuş atamaları, dinleme kipi, çift alkış",
             Bolum::Efektler => "Komutların ekrandaki görünüşü",
             Bolum::Sahneler => "Tek cümleyle çalışan eylem dizileri",
             Bolum::Ayarlar => "Tetik, mikrofon, ekranlar, başlangıç",
@@ -145,6 +151,7 @@ pub struct Uygulama {
     kalin_yazi: bool,
     sozluk: Sozluk,
     pub(crate) komutlar: KomutlarDurumu,
+    pub(crate) kisayollar: KisayollarDurumu,
     pub(crate) efektler: EfektlerDurumu,
     pub(crate) ayarlar: AyarlarDurumu,
     pub(crate) anlasilmayanlar: AnlasilmayanDurumu,
@@ -217,6 +224,7 @@ impl Uygulama {
             kalin_yazi,
             sozluk: Sozluk::Yok,
             komutlar: KomutlarDurumu::default(),
+            kisayollar: KisayollarDurumu::default(),
             efektler: EfektlerDurumu::default(),
             kurulum: KurulumDurumu::new(&sec.exe_yolu),
             guncelleme: GuncellemePaneli::default(),
@@ -388,6 +396,24 @@ impl Uygulama {
         }
     }
 
+    /// Tam açılmış ifadeyi (kısayol satırının) dener: kayıtlı ayarlarla, riskliyse onaylı.
+    pub(crate) fn dene_ifade(&mut self, ifade: &str) {
+        if self.degisti_mi() {
+            self.bildir("Önce kaydedin: Dene, Echora'nın kullandığı kayıtlı ayarlarla çalışır.", IletiTuru::Hata);
+            return;
+        }
+        let aranan = komut::turkce_kucuk(ifade).split_whitespace().collect::<Vec<_>>().join(" ");
+        let Some(k) = self.kayitli_harita().komutlar.iter().find(|k| k.ifade == aranan).cloned() else {
+            self.bildir("Denenemez: bu ifade kayıtlı ayarlarda yok.", IletiTuru::Hata);
+            return;
+        };
+        if k.riskli {
+            self.pencere = Some(Pencere::DeneOnay { soru: duzen::onay_sorusu(&k), ifade: k.ifade });
+        } else {
+            self.dene_gonder(&k.ifade, &duzen::eylem_tarifi(&k.eylem));
+        }
+    }
+
     fn sozluk_baslat(&mut self, ctx: &egui::Context) {
         let Some(model) = self.sec.model_yolu.clone() else { return };
         let ayarlar = match Ayarlar::hamdan(&self.ham) {
@@ -522,6 +548,7 @@ impl Uygulama {
                         HataYeri::Sahne(i) => Some((Bolum::Sahneler, format!("Sahne #{}'ye git", i + 1))),
                         HataYeri::Uygulama(_) => Some((Bolum::Komutlar, "Uygulamalara git".to_string())),
                         HataYeri::Efekt => Some((Bolum::Efektler, "Efektlere git".to_string())),
+                        HataYeri::Kisayol => Some((Bolum::Kisayollar, "Kısayollara git".to_string())),
                         HataYeri::Genel => None,
                     };
                     if let Some((bolum, etiket)) = git {
@@ -548,6 +575,10 @@ impl Uygulama {
             // Efektlerden çıkınca mikrofon bırakılır, döngü durur.
             self.efektler.birak();
         }
+        if self.bolum == Bolum::Kisayollar && b != Bolum::Kisayollar {
+            // Tuş yakalama iptal; alkış denemesinin mikrofonu bırakılır.
+            self.kisayollar.birak();
+        }
         if self.bolum == Bolum::Kurulum && b != Bolum::Kurulum {
             // Mikrofon testi bölümden çıkınca kapanır.
             self.kurulum.birak();
@@ -560,6 +591,27 @@ impl Uygulama {
             self.anlasilmayanlar = AnlasilmayanDurumu::yukle(&self.sec.anlasilmayanlar_yolu);
         }
         self.bolum = b;
+    }
+
+    /// Bölümü küçük harfli ASCII adıyla açar (örnek kipi); bilinmeyen ad yok sayılır.
+    pub fn bolum_adla_ac(&mut self, ad: &str) {
+        let b = match ad {
+            "komutlar" => Bolum::Komutlar,
+            "kisayollar" => Bolum::Kisayollar,
+            "efektler" => Bolum::Efektler,
+            "efekt_ayarlari" => {
+                self.bolum_ac(Bolum::Efektler);
+                self.efektler.sekme_ac(efektler::Sekme::Efektler);
+                return;
+            }
+            "sahneler" => Bolum::Sahneler,
+            "ayarlar" => Bolum::Ayarlar,
+            "anlasilmayanlar" => Bolum::Anlasilmayanlar,
+            "kurulum" => Bolum::Kurulum,
+            "guncellemeler" => Bolum::Guncellemeler,
+            _ => return,
+        };
+        self.bolum_ac(b);
     }
 
     fn kenar_cubugu(&mut self, ui: &mut egui::Ui) {
@@ -825,7 +877,8 @@ impl eframe::App for Uygulama {
         let ctx = ui.ctx().clone();
         self.sozluk_sonucunu_al();
         self.kapanisi_denetle(&ctx);
-        if self.pencere.is_none() && self.bozuk.is_none()
+        // Tuş yakalanırken Ctrl+S kısayol adayıdır, kayıt değil.
+        if self.pencere.is_none() && self.bozuk.is_none() && !self.kisayollar.yakalaniyor()
             && ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::S)))
             && self.degisti_mi()
             && self.dogrula().is_ok()
@@ -870,6 +923,7 @@ impl eframe::App for Uygulama {
                 ui.add_space(10.0);
                 match self.bolum {
                     Bolum::Komutlar => self.komutlar_bolumu(ui),
+                    Bolum::Kisayollar => self.kisayollar_bolumu(ui),
                     Bolum::Efektler => self.efektler_bolumu(ui),
                     Bolum::Sahneler => self.sahneler_bolumu(ui),
                     Bolum::Ayarlar => self.ayarlar_bolumu(ui),
@@ -886,6 +940,27 @@ impl eframe::App for Uygulama {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.efektler.birak();
+        self.kisayollar.birak();
         self.kurulum.birak();
+    }
+}
+
+#[cfg(test)]
+mod testler {
+    use eframe::egui;
+
+    /// Arayüzde metin olarak kullanılan simgeler kurulu yazı tiplerinde bulunmalı (yoksa kutu
+    /// çizilir). ▶ ✓ ⚠ ↺ bulunmadığı için onlar çizilir ya da yazıyla verilir.
+    #[test]
+    fn kullanilan_simgeler_yazi_tipinde_var() {
+        let ctx = egui::Context::default();
+        super::gorunumu_kur(&ctx);
+        let mut cikti = ctx.run_ui(egui::RawInput::default(), |_| {});
+        cikti.textures_delta.clear();
+        let eksik: Vec<char> = ctx.fonts_mut(|f| {
+            "●—…·→↑↓•“”".chars().filter(|c| !f.has_glyph(&egui::FontId::proportional(14.0), *c)).collect()
+        });
+        println!("eksik: {eksik:?}");
+        assert!(eksik.is_empty(), "eksik simgeler: {eksik:?}");
     }
 }

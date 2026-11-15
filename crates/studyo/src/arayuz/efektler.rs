@@ -1,6 +1,8 @@
-//! Efektler bölümü: efektleri / ipucu efektlerini açıp kapatan anahtarlar, tüm efektlere birden
-//! uygulanan ortak ayar, efekte özel (isteğe bağlı, kısmi) ayar, olay ipuçları ve canlı önizleme.
+//! Efektler bölümü. Üç sekme: "Komut efektleri" (varsayılan; her komutun efektini tek listede
+//! seçme, toplu atama ve önizleme), "Efekt ayarları" (anahtarlar, ortak ayar, efekte özel kısmi
+//! ayar) ve "İpucu olayları". Önizleme hepsinde aynı canlı alanı kullanır.
 
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Stroke, Ui};
@@ -48,11 +50,26 @@ impl OlayTuru {
 enum Secim {
     Efekt(Efekt),
     Olay(OlayTuru),
+    /// Komut satırının etkin efekti (Komut efektleri sekmesi).
+    Komut(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sekme {
+    KomutEfektleri,
+    Efektler,
+    Olaylar,
 }
 
 pub struct EfektlerDurumu {
-    olaylar_sekmesi: bool,
+    pub(crate) sekme: Sekme,
     secim: Secim,
+    /// Komut efektleri sekmesinde toplu işlem için işaretli satırlar.
+    secili_satirlar: BTreeSet<usize>,
+    /// Toplu atamada seçilen efekt (`None` = eyleme göre).
+    toplu_efekt: Option<Efekt>,
+    /// Sonraki karede bu komut satırına kaydır.
+    kaydir: Option<usize>,
     onizleme_metni: String,
     dongu: bool,
     mikrofonla: bool,
@@ -67,8 +84,11 @@ pub struct EfektlerDurumu {
 impl Default for EfektlerDurumu {
     fn default() -> Self {
         EfektlerDurumu {
-            olaylar_sekmesi: false,
-            secim: Secim::Efekt(Efekt::Nefes),
+            sekme: Sekme::KomutEfektleri,
+            secim: Secim::Komut(0),
+            secili_satirlar: BTreeSet::new(),
+            toplu_efekt: Some(Efekt::Aurora),
+            kaydir: None,
             onizleme_metni: "Chrome aç".into(),
             dongu: false,
             mikrofonla: false,
@@ -81,6 +101,33 @@ impl Default for EfektlerDurumu {
 }
 
 impl EfektlerDurumu {
+    /// Sekmeyi açar ve seçimi o sekmenin ilk öğesine getirir (Komut efektlerinde kendiliğinden
+    /// oynatılmaz; ötekilerde seçilen bir kez oynar).
+    pub(crate) fn sekme_ac(&mut self, sekme: Sekme) {
+        if self.sekme == sekme {
+            return;
+        }
+        self.sekme = sekme;
+        self.secim = match sekme {
+            Sekme::KomutEfektleri => Secim::Komut(0),
+            Sekme::Efektler => Secim::Efekt(Efekt::Nefes),
+            Sekme::Olaylar => Secim::Olay(OlayTuru::Anlasilmadi),
+        };
+        if sekme == Sekme::KomutEfektleri {
+            self.zamanlayici.iptal();
+        } else {
+            self.zamanlayici.degisti();
+        }
+    }
+
+    /// Komut efektleri sekmesinde satırı seçer, ona kaydırır ve efektini önizler.
+    pub(crate) fn komutu_onizle(&mut self, satir: usize) {
+        self.sekme = Sekme::KomutEfektleri;
+        self.secim = Secim::Komut(satir);
+        self.kaydir = Some(satir);
+        self.zamanlayici.degisti();
+    }
+
     /// Bölümden çıkarken / kapanırken: mikrofon bırakılır, döngü durur.
     pub fn birak(&mut self) {
         self.mikrofonla = false;
@@ -136,7 +183,7 @@ fn ozel_alan<T: Copy>(ui: &mut Ui, deger: &mut Option<T>, taban: T, duzenle: imp
         }
     });
     if deger.is_some() {
-        if ortak::kucuk_dugme(ui, "↺ ortak").on_hover_text("Bu alanı ortak ayara bağla").clicked() {
+        if ortak::kucuk_dugme(ui, "ortağa dön").on_hover_text("Bu alanı ortak ayara bağla").clicked() {
             *deger = None;
             degisti = true;
         }
@@ -158,59 +205,73 @@ fn ekran_secici(ui: &mut Ui, kimlik: impl egui::AsIdSalt, ekran: &mut EfektEkran
 
 impl Uygulama {
     pub(crate) fn efektler_bolumu(&mut self, ui: &mut Ui) {
+        self.sekme_cubugu(ui);
+        ui.add_space(8.0);
         // Görünür yükseklik kaydırma alanına girmeden ölçülür: alttaki liste/önizleme bölümü bir
         // ekran boyu alır, böylece aşağı kaydırınca bütünüyle görünür.
         let gorunur = ui.available_height();
-        egui::ScrollArea::vertical().id_salt("efektler_bolumu").auto_shrink([false, false]).show(ui, |ui| {
-            self.anahtarlar_karti(ui);
-            ui.add_space(8.0);
-            self.ozel_bilgi_seridi(ui);
-            self.ortak_ayar_karti(ui);
-            ui.add_space(8.0);
-            self.secim_bolumu(ui, (gorunur - 44.0).max(380.0));
-        });
+        match self.efektler.sekme {
+            Sekme::KomutEfektleri => self.komut_efektleri(ui, gorunur),
+            Sekme::Efektler | Sekme::Olaylar => {
+                egui::ScrollArea::vertical().id_salt("efektler_bolumu").auto_shrink([false, false]).show(ui, |ui| {
+                    self.anahtarlar_karti(ui);
+                    ui.add_space(8.0);
+                    self.ozel_bilgi_seridi(ui);
+                    self.ortak_ayar_karti(ui);
+                    ui.add_space(8.0);
+                    self.secim_bolumu(ui, (gorunur - 10.0).max(380.0));
+                });
+            }
+        }
         self.onizleme_zamanla(ui.ctx());
+    }
+
+    /// Bölümün üstündeki büyük sekme düğmeleri.
+    fn sekme_cubugu(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            for (sekme, ad) in [(Sekme::KomutEfektleri, "Komut efektleri"), (Sekme::Efektler, "Efekt ayarları"), (Sekme::Olaylar, "İpucu olayları")] {
+                let secili = self.efektler.sekme == sekme;
+                let metin = RichText::new(ad).size(15.0);
+                let metin = if secili { metin.strong() } else { metin };
+                if ui.add(egui::Button::selectable(secili, metin).min_size(egui::vec2(150.0, 32.0))).clicked() && !secili {
+                    self.efektler.sekme_ac(sekme);
+                }
+            }
+        });
     }
 
     /// Efekt/olay listesi, önizleme ve seçilenin ayarları.
     fn secim_bolumu(&mut self, ui: &mut Ui, yukseklik: f32) {
-        ui.horizontal(|ui| {
-            if ui.selectable_label(!self.efektler.olaylar_sekmesi, "Efektler").clicked() && self.efektler.olaylar_sekmesi {
-                self.efektler.olaylar_sekmesi = false;
-                self.efektler.secim = Secim::Efekt(Efekt::Nefes);
-                self.efektler.zamanlayici.degisti();
-            }
-            if ui.selectable_label(self.efektler.olaylar_sekmesi, "İpucu olayları").clicked() && !self.efektler.olaylar_sekmesi {
-                self.efektler.olaylar_sekmesi = true;
-                self.efektler.secim = Secim::Olay(OlayTuru::Anlasilmadi);
-                self.efektler.zamanlayici.degisti();
-            }
-            ui.add_space(8.0);
-            ortak::ipucu(ui, "Listeden bir efekt seçin; ortak ayarın o efektte nasıl durduğu önizlemede oynar.");
-        });
+        ortak::ipucu(
+            ui,
+            if self.efektler.sekme == Sekme::Olaylar {
+                "Listeden bir olay seçin; ipucu efekti önizlemede oynar."
+            } else {
+                "Listeden bir efekt seçin; ortak ayarın o efektte nasıl durduğu önizlemede oynar."
+            },
+        );
         ui.add_space(6.0);
+        let kullanim = duzen::efekt_kullanimi(&self.ham, &self.harita);
+        let kipi_komuta_gore = duzen::kip_oku(&self.ham) == KipSecimi::KomutaGore;
 
         ui.horizontal_top(|ui| {
             ui.set_height(yukseklik);
             // Sol: liste.
-            ui.allocate_ui_with_layout(egui::vec2(190.0, yukseklik), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.allocate_ui_with_layout(egui::vec2(250.0, yukseklik), egui::Layout::top_down(egui::Align::Min), |ui| {
                 egui::ScrollArea::vertical().id_salt("efekt_listesi").auto_shrink([false, false]).show(ui, |ui| {
-                    if self.efektler.olaylar_sekmesi {
+                    if self.efektler.sekme == Sekme::Olaylar {
                         for o in OlayTuru::HEPSI {
                             let goster = olay_ayari(&mut self.ham, o).goster;
                             let etiket = if goster { o.ad().to_string() } else { format!("{} (kapalı)", o.ad()) };
-                            if ui.add(egui::Button::selectable(self.efektler.secim == Secim::Olay(o), etiket).min_size(egui::vec2(180.0, 30.0))).clicked() {
+                            if ui.add(egui::Button::selectable(self.efektler.secim == Secim::Olay(o), etiket).min_size(egui::vec2(240.0, 30.0))).clicked() {
                                 self.efektler.secim = Secim::Olay(o);
                                 self.efektler.zamanlayici.degisti();
                             }
                         }
                     } else {
-                        for e in Efekt::HEPSI {
+                        for (j, e) in Efekt::HEPSI.into_iter().enumerate() {
                             let ozel = duzen::ozel_var_mi(&self.ham, e);
-                            let etiket = if ozel { format!("{}  •", e.ad()) } else { e.ad().to_string() };
-                            let yanit = ui.add(egui::Button::selectable(self.efektler.secim == Secim::Efekt(e), etiket).min_size(egui::vec2(180.0, 30.0)));
-                            let yanit = if ozel { yanit.on_hover_text("Bu efektin özel ayarı var") } else { yanit };
-                            if yanit.clicked() {
+                            if self.efekt_listesi_ogesi(ui, e, ozel, kullanim[j], kipi_komuta_gore).clicked() {
                                 self.efektler.secim = Secim::Efekt(e);
                                 self.efektler.zamanlayici.degisti();
                             }
@@ -231,10 +292,208 @@ impl Uygulama {
                     match self.efektler.secim {
                         Secim::Efekt(e) => self.efekt_ayarlari(ui, e),
                         Secim::Olay(o) => self.olay_ayarlari(ui, o),
+                        Secim::Komut(_) => {}
                     }
                 });
             });
         });
+    }
+
+    /// Efekt listesinin üç satırlık öğesi: renkli nokta + ad, tek satır tanım, kullanım sayısı.
+    fn efekt_listesi_ogesi(&self, ui: &mut Ui, e: Efekt, ozel: bool, kullanim: usize, kipi_komuta_gore: bool) -> egui::Response {
+        let secili = self.efektler.secim == Secim::Efekt(e);
+        let yanit = ui.add_sized([240.0, 58.0], egui::Button::selectable(secili, "").frame_when_inactive(false));
+        let r = yanit.rect.shrink2(egui::vec2(10.0, 6.0));
+        let p = ui.painter();
+        let ad_rengi = if secili { ui.visuals().strong_text_color() } else { ui.visuals().text_color() };
+        p.circle_filled(egui::pos2(r.left() + 5.0, r.top() + 9.0), 5.0, ortak::efekt_rengi(e));
+        let ad = if ozel { format!("{}  •", e.ad()) } else { e.ad().to_string() };
+        let ad_yazi = egui::FontId::new(14.5, if self.kalin_yazi { egui::FontFamily::Name("kalin".into()) } else { egui::FontFamily::Proportional });
+        p.text(egui::pos2(r.left() + 16.0, r.top()), egui::Align2::LEFT_TOP, ad, ad_yazi, ad_rengi);
+        let soluk = ui.visuals().weak_text_color();
+        let tanim = p.layout(ortak::efekt_aciklamasi(e).to_string(), egui::FontId::proportional(11.5), soluk, r.width() - 16.0);
+        let tanim_satiri = tanim.rows.first().map(|s| s.text()).unwrap_or_default();
+        let tanim_metni = if tanim.rows.len() > 1 { format!("{}…", tanim_satiri.trim_end()) } else { tanim_satiri };
+        p.text(egui::pos2(r.left() + 16.0, r.center().y + 1.0), egui::Align2::LEFT_CENTER, tanim_metni, egui::FontId::proportional(11.5), soluk);
+        let kullanim_metni = match kullanim {
+            0 => "hiçbir komutta kullanılmıyor".to_string(),
+            n => format!("{n} komutta kullanılıyor"),
+        };
+        let renk = if kullanim > 0 && kipi_komuta_gore { ortak::basari_rengi(ui) } else { soluk };
+        p.text(r.left_bottom() + egui::vec2(16.0, 0.0), egui::Align2::LEFT_BOTTOM, kullanim_metni, egui::FontId::proportional(11.5), renk);
+        let ipucu = if ozel { format!("{}\nBu efektin özel ayarı var.", ortak::efekt_aciklamasi(e)) } else { ortak::efekt_aciklamasi(e).to_string() };
+        yanit.on_hover_text(ipucu)
+    }
+
+    /// "Komut efektleri" sekmesi: her komut satırının efekti tek listede.
+    fn komut_efektleri(&mut self, ui: &mut Ui, yukseklik: f32) {
+        // Kip uyarısı: komuta göre değilse atanan efektler şu an kullanılmaz.
+        let kip = duzen::kip_oku(&self.ham);
+        if kip != KipSecimi::KomutaGore || !self.ham.efektler_acik {
+            let renk = ortak::uyari_rengi(ui);
+            let mut duzelt = false;
+            egui::Frame::new()
+                .fill(renk.gamma_multiply(0.12))
+                .stroke(Stroke::new(1.0, renk.gamma_multiply(0.5)))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        let metin = if !self.ham.efektler_acik {
+                            "Efektler kapalı: hiçbir komutta efekt oynamaz (Efekt ayarları sekmesindeki anahtar).".to_string()
+                        } else if let KipSecimi::TekTema(e) = kip {
+                            format!("\"Tek tema\" kipi açık: her komut {} ile gösterilir; buradaki seçimler kip \"Komuta göre\" olunca geçerli olur.", e.ad())
+                        } else {
+                            "\"Rastgele\" kipi açık: buradaki seçimler kip \"Komuta göre\" olunca geçerli olur.".to_string()
+                        };
+                        ui.label(RichText::new(metin).color(renk));
+                        if self.ham.efektler_acik && ui.small_button("Komuta göre yap").clicked() {
+                            duzelt = true;
+                        }
+                    });
+                });
+            if duzelt {
+                duzen::kip_yaz(&mut self.ham, KipSecimi::KomutaGore);
+            }
+            ui.add_space(6.0);
+        }
+        self.toplu_islem_satiri(ui);
+        ui.add_space(6.0);
+        let yukseklik = ui.available_height().clamp(300.0, yukseklik.max(300.0));
+        // Sabit iki sütun: sol liste, sağda 280 noktalık önizleme (dikdörtgenler önceden ayrılır).
+        let toplam = ui.available_width();
+        let sag = 280.0_f32.min(toplam * 0.45);
+        let (alan, _) = ui.allocate_exact_size(egui::vec2(toplam, yukseklik), egui::Sense::hover());
+        let sol_alan = Rect::from_min_size(alan.min, egui::vec2(toplam - sag - 16.0, yukseklik));
+        let sag_alan = Rect::from_min_size(Pos2::new(alan.max.x - sag, alan.min.y), egui::vec2(sag, yukseklik));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(sol_alan).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+            self.komut_efekt_listesi(ui);
+        });
+        let x = sol_alan.max.x + 8.0;
+        ui.painter().vline(x, alan.y_range(), ui.visuals().widgets.noninteractive.bg_stroke);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(sag_alan).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+            self.onizleme_alani(ui, 190.0);
+            ui.add_space(6.0);
+            self.onizleme_dugmeleri(ui);
+            ui.add_space(6.0);
+            if let Secim::Komut(i) = self.efektler.secim {
+                if let Some(e) = duzen::komut_etkin_efekti(&self.ham, &self.harita, i) {
+                    ortak::kart(ui, |ui| {
+                        ui.label(ortak::efekt_yazisi(ui, Some(e), e.ad(), None));
+                        ortak::ipucu(ui, ortak::efekt_aciklamasi(e));
+                        ortak::ipucu(ui, "Renk, şiddet ve hız ortak ayardan (Efekt ayarları sekmesi) gelir.");
+                    });
+                }
+            }
+        });
+    }
+
+    fn toplu_islem_satiri(&mut self, ui: &mut Ui) {
+        let adet = self.ham.komut.len();
+        self.efektler.secili_satirlar.retain(|i| *i < adet);
+        let secili = self.efektler.secili_satirlar.len();
+        let mut uygula: Option<Vec<usize>> = None;
+        let mut hepsi_varsayilan = false;
+        ortak::kart(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let mut hepsi = adet > 0 && secili == adet;
+                if ui.checkbox(&mut hepsi, "Tümünü seç").changed() {
+                    self.efektler.secili_satirlar = if hepsi { (0..adet).collect() } else { BTreeSet::new() };
+                }
+                ui.add_space(8.0);
+                let mut toplu = self.efektler.toplu_efekt;
+                ortak::komut_efekt_secici(ui, "toplu_efekt", &mut toplu, None, 150.0);
+                self.efektler.toplu_efekt = toplu;
+                if ui.add_enabled(secili > 0, egui::Button::new(format!("Seçililere ata ({secili})"))).clicked() {
+                    uygula = Some(self.efektler.secili_satirlar.iter().copied().collect());
+                }
+                if ui.add_enabled(adet > 0, egui::Button::new("Tümüne ata")).clicked() {
+                    uygula = Some((0..adet).collect());
+                }
+                ui.add_space(8.0);
+                if ui
+                    .add_enabled(adet > 0, egui::Button::new("Tümü eyleme göre"))
+                    .on_hover_text("Komutlara özel efektleri kaldırır; her komut eyleminin varsayılan efektini kullanır")
+                    .clicked()
+                {
+                    hepsi_varsayilan = true;
+                }
+            });
+        });
+        if let Some(satirlar) = uygula {
+            let efekt = self.efektler.toplu_efekt;
+            let n = duzen::efekt_ata(&mut self.ham, satirlar, efekt);
+            let ad = efekt.map_or("eyleme göre", |e| e.ad());
+            self.bildir(format!("{n} komutun efekti \"{ad}\" yapıldı; dosyaya yazmak için Kaydet'e basın."), IletiTuru::Bilgi);
+        }
+        if hepsi_varsayilan {
+            let n = duzen::efekt_ata(&mut self.ham, 0..adet, None);
+            self.bildir(format!("{n} komut eyleme göre efekte döndü; dosyaya yazmak için Kaydet'e basın."), IletiTuru::Bilgi);
+        }
+    }
+
+    fn komut_efekt_listesi(&mut self, ui: &mut Ui) {
+        let adet = self.ham.komut.len();
+        let kaydir = self.efektler.kaydir.take();
+        let mut onizle: Option<usize> = None;
+        egui::ScrollArea::vertical().id_salt("komut_efekt_listesi").auto_shrink([false, false]).show(ui, |ui| {
+            if adet == 0 {
+                ortak::ipucu(ui, "Hiç komut yok. Komutlar bölümünden ekleyin.");
+            }
+            for i in 0..adet {
+                let gosterim = duzen::satir_gosterimi(&self.ham, i);
+                let varsayilan = self.harita.varsayilan_efekt(i);
+                let ifadeler = self.ham.komut[i].ifadeler.join("  ·  ");
+                let secili_satir = self.efektler.secim == Secim::Komut(i);
+                let dolgu = if secili_satir { ui.visuals().selection.bg_fill.gamma_multiply(0.25) } else { ui.visuals().faint_bg_color };
+                egui::Frame::new()
+                    .fill(dolgu)
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            let mut isaretli = self.efektler.secili_satirlar.contains(&i);
+                            if ui.checkbox(&mut isaretli, "").changed() {
+                                if isaretli {
+                                    self.efektler.secili_satirlar.insert(i);
+                                } else {
+                                    self.efektler.secili_satirlar.remove(&i);
+                                }
+                            }
+                            // Açılır listenin düğmesi verilen genişlikten ~ok simgesi + iç boşluk kadar geniştir.
+                            let sag = 170.0 + 32.0 + 3.0 * ui.spacing().item_spacing.x + ui.spacing().icon_width + 2.0 * ui.spacing().button_padding.x;
+                            let sol = (ui.available_width() - sag).max(60.0);
+                            ui.allocate_ui_with_layout(egui::vec2(sol, 26.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.set_min_width(sol);
+                                ui.add(egui::Label::new(RichText::new(&gosterim).strong()).truncate());
+                            });
+                            let mut e = self.ham.komut[i].efekt;
+                            if ortak::komut_efekt_secici(ui, ("komut_efekt_sekme", i), &mut e, varsayilan, 170.0) {
+                                self.ham.komut[i].efekt = e;
+                                onizle = Some(i);
+                            }
+                            if ortak::oynat_dugmesi(ui).on_hover_text("Bu komutun efektini önizle").clicked() {
+                                onizle = Some(i);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add_space(28.0);
+                            ui.add(egui::Label::new(RichText::new(&ifadeler).weak().size(12.0)).truncate());
+                        });
+                    });
+                if kaydir == Some(i) {
+                    ui.scroll_to_cursor(Some(egui::Align::Center));
+                }
+                ui.add_space(4.0);
+            }
+        });
+        if let Some(i) = onizle {
+            self.efektler.secim = Secim::Komut(i);
+            self.efektler.zamanlayici.degisti();
+        }
     }
 
     /// Panelin üstündeki iki büyük anahtar.
@@ -431,6 +690,11 @@ impl Uygulama {
         let baslik = match self.efektler.secim {
             Secim::Efekt(e) => format!("Önizleme: {}", e.ad()),
             Secim::Olay(o) => format!("Önizleme: {} ipucu", o.ad()),
+            Secim::Komut(i) if i < self.ham.komut.len() => {
+                let e = duzen::komut_etkin_efekti(&self.ham, &self.harita, i).unwrap_or(Efekt::Nefes);
+                format!("Önizleme: {} — {}", duzen::satir_gosterimi(&self.ham, i), e.ad())
+            }
+            Secim::Komut(_) => "Önizleme: listeden bir komutu oynatın".to_string(),
         };
         p.text(rect.left_top() + egui::vec2(12.0, 10.0), egui::Align2::LEFT_TOP, baslik, egui::FontId::proportional(12.0), Color32::from_white_alpha(120));
         p.rect_stroke(rect, r8, Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color), egui::StrokeKind::Inside);
@@ -497,6 +761,7 @@ impl Uygulama {
         match self.efektler.secim {
             Secim::Efekt(e) => e,
             Secim::Olay(o) => olay_ayari(&mut self.ham, o).efekt,
+            Secim::Komut(i) => duzen::komut_etkin_efekti(&self.ham, &self.harita, i).unwrap_or(Efekt::Nefes),
         }
     }
 
@@ -507,6 +772,10 @@ impl Uygulama {
             Secim::Olay(o) => {
                 let a = *olay_ayari(&mut self.ham, o);
                 (a.efekt, duzen::etkin_olay_ayari(&self.ham, &a))
+            }
+            Secim::Komut(_) => {
+                let e = self.secili_efekt();
+                (e, duzen::etkin_efekt_ayari(&self.ham, e))
             }
         }
     }
@@ -580,7 +849,7 @@ impl Uygulama {
                     ortak::rozet(ui, "ortak ayarı kullanıyor", ortak::basari_rengi(ui));
                 }
             });
-            ortak::ipucu(ui, efekt_aciklamasi(e));
+            ortak::ipucu(ui, ortak::efekt_aciklamasi(e));
             ui.add_space(6.0);
             egui::CollapsingHeader::new("Bu efekte özel ayar")
                 .id_salt(("efekt_ozel", e.anahtar()))
@@ -672,26 +941,5 @@ impl Uygulama {
             *olay_ayari(&mut self.ham, o) = a;
             self.efektler.zamanlayici.degisti();
         }
-    }
-}
-
-fn efekt_aciklamasi(e: Efekt) -> &'static str {
-    match e {
-        Efekt::Nefes => "Ekran kenarları bir kez hafifçe kararıp açılır.",
-        Efekt::KenarNabzi => "Çerçevede dolaşan ince ışık.",
-        Efekt::SesDalgasi => "Alt kenarda sesin dalga biçimi.",
-        Efekt::TupKapanisi => "Görüntü yatay çizgiye, sonra noktaya çöker.",
-        Efekt::Perde => "Yukarıdan inen siyah kadife perde.",
-        Efekt::Portal => "Dönen ışık halkası açılır.",
-        Efekt::SokDalgasi => "Ortadan yayılan, masaüstünü büken halka.",
-        Efekt::Sonar => "İmleçten yayılan radar halkaları.",
-        Efekt::Aurora => "Üstten süzülen kuzey ışıkları.",
-        Efekt::Kivilcim => "Parçacık patlaması, yer çekimiyle düşer.",
-        Efekt::Murekkep => "Suya düşen mürekkep gibi yayılıp silinir.",
-        Efekt::YildizKaymasi => "Köşeden köşeye kuyruklu ışık.",
-        Efekt::KinetikYazi => "Söylenen komut harf harf belirir, toza dağılır.",
-        Efekt::HarfYagmuru => "Komutun harfleri yukarıdan yağar.",
-        Efekt::Bozulma => "Renk kayması ve tarama çizgileri.",
-        Efekt::Tarama => "Soldan sağa geçen ışık hüzmesi.",
     }
 }

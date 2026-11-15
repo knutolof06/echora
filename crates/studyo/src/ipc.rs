@@ -177,6 +177,11 @@ pub fn gonder(tur: usize, veri: &[u8]) -> Result<(), IpcHatasi> {
     Ok(())
 }
 
+/// Doğrulanmış Echora penceresi var mı (ileti gönderilmez; salt-okuma araması)?
+pub fn echora_calisiyor() -> bool {
+    dogrulanmis_pencere().is_some()
+}
+
 /// Komutu (tetiksiz ifade) arka planda çalıştırır.
 pub fn komutu_calistir(ifade: &str) -> Result<(), IpcHatasi> {
     gonder(KOMUT_CALISTIR, ifade.as_bytes())

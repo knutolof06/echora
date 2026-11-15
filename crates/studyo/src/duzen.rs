@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use komut::efekt::{Efekt, EfektAyari};
 use komut::{
-    adim_alanlari, eylem_adlari, eylem_alanlari, saat_araligi_coz, saat_araligi_yaz, turkce_kucuk, Ayarlar,
+    adim_alanlari, efekt_varsayilani, eylem_adlari, eylem_alanlari, saat_araligi_coz, saat_araligi_yaz, turkce_kucuk, Ayarlar,
     EfektOzel, EkranSecimi, HamAdim, HamAyarlar, HamKomut, HamSahne, HamUygulama, Komut, MedyaTusu, OlayAyari,
 };
 
@@ -193,8 +193,18 @@ fn surec_var(u: &HamUygulama) -> bool {
     !kok.is_empty()
 }
 
-/// Bir satırın ifade başına açılım sayısı.
+/// Zamanlanabilir komutta her açılımın ardından gelen zamanlı açılım sayısı (`komut` crate'indeki
+/// süre listesinin uzunluğu; ayna yanılırsa harita satır satır kurulur).
+const ZAMANLI_ADEDI: usize = 9;
+
+/// Bir satırın ifade başına açılım sayısı (zamanlı açılımlar dahil).
 fn acilim_adedi(k: &HamKomut, ham: &HamAyarlar) -> usize {
+    let carpan = if k.zamanlanabilir { 1 + ZAMANLI_ADEDI } else { 1 };
+    sablon_adedi(k, ham) * carpan
+}
+
+/// Şablon açılım sayısı (zamanlısız).
+fn sablon_adedi(k: &HamKomut, ham: &HamAyarlar) -> usize {
     match k.eylem.as_str() {
         "uygulama_ac" => ham.uygulama.len(),
         "uygulama_kapat" | "uygulama_one_getir" => ham.uygulama.iter().filter(|u| surec_var(u)).count(),
@@ -223,7 +233,7 @@ impl KomutHaritasi {
                 return None;
             }
             // Şablonsuz satırın ilk komutu ilk ifadenin kendisi olmalı.
-            if adet == 1 && beklenen_yer_tutucu(k).is_none() {
+            if sablon_adedi(k, ham) == 1 && beklenen_yer_tutucu(k).is_none() {
                 if let Some(i) = k.ifadeler.first() {
                     if ayarlar.komutlar[bas].ifade != duz(i) {
                         return None;
@@ -242,6 +252,14 @@ impl KomutHaritasi {
     pub fn satir_satir(ham: &HamAyarlar) -> Self {
         let mut tek = ham.clone();
         let satirlar = std::mem::take(&mut tek.komut);
+        // Kısayol/alkış/dinleme alanları başka satırların ifadelerine bağlıdır; tek satırlık
+        // denemede onların hatası her satırı geçersiz göstermesin.
+        tek.kisayol.clear();
+        tek.alkis = komut::HamAlkis::default();
+        tek.dinleme_kipi = komut::DinlemeKipi::Surekli;
+        tek.dinleme_tusu = None;
+        tek.palet_tusu = None;
+        tek.dinleme_suresi_sn = HamAyarlar::default().dinleme_suresi_sn;
         let mut h = KomutHaritasi::default();
         for satir in satirlar {
             let ifade_adedi = satir.ifadeler.len().max(1);
@@ -343,6 +361,8 @@ pub fn eylem_tarifi(e: &komut::Eylem) -> String {
         E::Sahne { ad } => format!("\"{ad}\" sahnesini çalıştırır"),
         E::KomutCalistir(k) => format!("şu komut satırını çalıştırır: {k}"),
         E::TusGonder(t) => format!("şu tuşlara basar: {t}"),
+        E::Zamanla { dakika, gosterim, .. } => format!("{dakika} dakika sonra şunu yapar: {gosterim}"),
+        E::ZamanlayicilariIptal => "bekleyen zamanlayıcıları iptal eder".into(),
     }
 }
 
@@ -565,6 +585,8 @@ pub enum HataYeri {
     Sahne(usize),
     Uygulama(String),
     Efekt,
+    /// Kısayollar, dinleme kipi, palet tuşu, çift alkış.
+    Kisayol,
     Genel,
 }
 
@@ -597,6 +619,11 @@ pub fn hata_yeri(ileti: &str) -> HataYeri {
     if ileti.starts_with("efektler") || ileti.starts_with("olaylar") || ileti.starts_with("efekt_") {
         return HataYeri::Efekt;
     }
+    const KISAYOL_ONEKLERI: [&str; 7] =
+        ["kisayol #", "kısayol", "dinleme_kipi", "dinleme_tusu", "dinleme_suresi", "palet_tusu", "alkis"];
+    if KISAYOL_ONEKLERI.iter().any(|o| ileti.starts_with(o)) {
+        return HataYeri::Kisayol;
+    }
     HataYeri::Genel
 }
 
@@ -614,6 +641,126 @@ pub fn eksik_kelimeler(ifade: &str, eksikler: &[String]) -> Vec<String> {
         }
     }
     bulunan
+}
+
+// --- komut efektleri ---
+
+impl KomutHaritasi {
+    /// Satırın eyleme göre (katalog) varsayılan efekti; satır geçersizse ya da açılımı yoksa `None`.
+    pub fn varsayilan_efekt(&self, satir: usize) -> Option<Efekt> {
+        self.acilimlar(satir).first().map(|k| efekt_varsayilani(&k.eylem))
+    }
+}
+
+/// Satırın "komuta göre" kipindeki etkin efekti: komuta yazılan, yoksa eyleme göre varsayılan.
+pub fn komut_etkin_efekti(ham: &HamAyarlar, harita: &KomutHaritasi, satir: usize) -> Option<Efekt> {
+    ham.komut.get(satir)?.efekt.or_else(|| harita.varsayilan_efekt(satir))
+}
+
+/// Efekt başına "kaç komut satırında kullanılıyor" (komuta göre kipte; `Efekt::HEPSI` sırasıyla).
+pub fn efekt_kullanimi(ham: &HamAyarlar, harita: &KomutHaritasi) -> [usize; 16] {
+    let mut sayim = [0usize; 16];
+    for i in 0..ham.komut.len() {
+        if let Some(e) = komut_etkin_efekti(ham, harita, i) {
+            if let Some(j) = Efekt::HEPSI.iter().position(|x| *x == e) {
+                sayim[j] += 1;
+            }
+        }
+    }
+    sayim
+}
+
+/// Seçilen satırlara efekt atar (`None` = eyleme göre). Değişen satır sayısı.
+pub fn efekt_ata(ham: &mut HamAyarlar, satirlar: impl IntoIterator<Item = usize>, efekt: Option<Efekt>) -> usize {
+    let mut n = 0;
+    for i in satirlar {
+        if let Some(k) = ham.komut.get_mut(i) {
+            if k.efekt != efekt {
+                k.efekt = efekt;
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// Satırın kısa adı: eylemin görünen adı ("Tüm ekranları kapat"); aynı eylemli başka satır da
+/// varsa ilk ifadeyle ayrılır ("Medya tuşu — müziği durdur").
+pub fn satir_gosterimi(ham: &HamAyarlar, satir: usize) -> String {
+    let Some(k) = ham.komut.get(satir) else { return String::new() };
+    let ad = eylem_gorunen_adi(&k.eylem);
+    let yinelenen = ham.komut.iter().enumerate().any(|(j, b)| j != satir && b.eylem == k.eylem);
+    match k.ifadeler.first() {
+        Some(ifade) if yinelenen => format!("{ad} — {ifade}"),
+        _ => ad.to_string(),
+    }
+}
+
+// --- kısayollar ---
+
+/// Kısayol listesinin satır içi uyarıları (kaydetmeden önce; asıl denetim `Ayarlar::hamdan`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KisayolUyarilari {
+    /// `[[kisayol]]` satırı başına.
+    pub satirlar: Vec<Option<String>>,
+    pub dinleme: Option<String>,
+    pub palet: Option<String>,
+    pub alkis: Option<String>,
+}
+
+/// Uyarıları hesaplar: geçersiz tuş yazımı, aynı kısayolun iki yerde kullanılması, boş ya da hiçbir
+/// komutla eşleşmeyen ifade. `ifadeler`: geçerli açılmış (düzlenmiş, tetiksiz) ifadeler.
+pub fn kisayol_uyarilari(ham: &HamAyarlar, ifadeler: &std::collections::HashSet<String>) -> KisayolUyarilari {
+    use std::collections::HashMap;
+    let mut u = KisayolUyarilari { satirlar: vec![None; ham.kisayol.len()], ..Default::default() };
+    // (kanonik metin) → ilk kullanan yerin adı.
+    let mut gorulen: HashMap<String, String> = HashMap::new();
+    let mut denetle = |ad: String, tuslar: &str| -> Option<String> {
+        match komut::kisayol_coz(tuslar) {
+            Err(h) => Some(h),
+            Ok(k) => match gorulen.get(&k.metin) {
+                Some(onceki) => Some(format!("{} zaten {onceki} için kullanılıyor", crate::arama::kisayol_gorunumu(&k.metin))),
+                None => {
+                    gorulen.insert(k.metin, ad);
+                    None
+                }
+            },
+        }
+    };
+    if let Some(t) = ham.dinleme_tusu.as_deref() {
+        u.dinleme = denetle("dinleme tuşu".into(), t);
+    } else if ham.dinleme_kipi == komut::DinlemeKipi::Tusla {
+        u.dinleme = Some("Tuşla kipinde dinleme tuşu gerekli".into());
+    }
+    if let Some(t) = ham.palet_tusu.as_deref() {
+        u.palet = denetle("komut paleti".into(), t);
+    }
+    for (i, k) in ham.kisayol.iter().enumerate() {
+        let tus = denetle(format!("kısayol #{}", i + 1), &k.tuslar);
+        let ifade = duz(&k.ifade);
+        u.satirlar[i] = tus.or_else(|| {
+            if ifade.is_empty() {
+                Some("Komut seçin".into())
+            } else if !ifadeler.contains(&ifade) {
+                Some(format!("\"{ifade}\" hiçbir komutla eşleşmiyor"))
+            } else {
+                None
+            }
+        });
+    }
+    let a = duz(&ham.alkis.ifade);
+    if ham.alkis.acik && a.is_empty() {
+        u.alkis = Some("Çift alkışın çalıştıracağı komutu seçin".into());
+    } else if !a.is_empty() && !ifadeler.contains(&a) {
+        u.alkis = Some(format!("\"{a}\" hiçbir komutla eşleşmiyor"));
+    }
+    u
+}
+
+/// Yeni kısayol satırı ekler; sırasını döner.
+pub fn kisayol_ekle(ham: &mut HamAyarlar, tuslar: &str, ifade: &str) -> usize {
+    ham.kisayol.push(komut::HamKisayol { tuslar: tuslar.to_string(), ifade: ifade.to_string() });
+    ham.kisayol.len() - 1
 }
 
 #[cfg(test)]
@@ -954,5 +1101,131 @@ mod testler {
         assert_eq!(eksik_kelimeler("{uygulama} aç", &eksik), Vec::<String>::new());
         assert_eq!(eksik_kelimeler("Krom aç krom", &eksik), vec!["krom"]);
         assert_eq!(eksik_kelimeler("ekranı kilitle", &eksik), vec!["kilitle"]);
+    }
+
+    #[test]
+    fn zamanlanabilir_harita_tek_gecisle_kurulur() {
+        // Varsayılan dosyada zamanlanabilir komutlar var: tek geçiş haritası satır satır ile aynı.
+        let ham = varsayilan_ham();
+        assert!(ham.komut.iter().any(|k| k.zamanlanabilir));
+        let a = Ayarlar::hamdan(&ham).expect("varsayılan geçerli");
+        let tek = KomutHaritasi::kur(&ham, a).expect("sayım tutmalı");
+        assert_eq!(tek, KomutHaritasi::satir_satir(&ham));
+        let i = ham.komut.iter().position(|k| k.eylem == "uyut").expect("uyut satırı");
+        let acilimlar = tek.acilimlar(i);
+        assert_eq!(acilimlar.len(), 10);
+        assert_eq!(acilimlar[0].eylem, komut::Eylem::Uyut);
+        assert!(acilimlar[1..].iter().all(|k| matches!(k.eylem, komut::Eylem::Zamanla { .. })));
+    }
+
+    #[test]
+    fn toplu_efekt_atama_ve_kullanim_sayimi() {
+        let mut ham = HamAyarlar::default();
+        ham.komut.push(komut("ekranları kapat", "ekranlari_kapat"));
+        ham.komut.push(komut("masaüstünü göster", "masaustunu_goster"));
+        ham.komut.push(komut("pencereyi küçült", "pencere_kucult"));
+        let h = KomutHaritasi::olustur(&ham);
+        let sira = |e: Efekt| Efekt::HEPSI.iter().position(|x| *x == e).unwrap();
+        // Eyleme göre: Tüp Kapanışı ×1, Sonar ×2.
+        let k = efekt_kullanimi(&ham, &h);
+        assert_eq!(k[sira(Efekt::TupKapanisi)], 1);
+        assert_eq!(k[sira(Efekt::Sonar)], 2);
+        assert_eq!(k.iter().sum::<usize>(), 3);
+        assert_eq!(komut_etkin_efekti(&ham, &h, 0), Some(Efekt::TupKapanisi));
+
+        // Seçilenlere ata: yalnız değişenler sayılır; sınır dışı sıra yok sayılır.
+        assert_eq!(efekt_ata(&mut ham, [0, 2, 9], Some(Efekt::Aurora)), 2);
+        assert_eq!(efekt_ata(&mut ham, [0], Some(Efekt::Aurora)), 0);
+        let k = efekt_kullanimi(&ham, &h);
+        assert_eq!(k[sira(Efekt::Aurora)], 2);
+        assert_eq!(k[sira(Efekt::Sonar)], 1);
+        assert_eq!(k[sira(Efekt::TupKapanisi)], 0);
+
+        // Tümünü eyleme göre yap.
+        assert_eq!(efekt_ata(&mut ham, 0..3, None), 2);
+        assert!(ham.komut.iter().all(|k| k.efekt.is_none()));
+        assert!(Ayarlar::hamdan(&ham).is_ok());
+    }
+
+    #[test]
+    fn satir_gosterimi_sablonlu_ve_sablonsuz() {
+        let mut ham = HamAyarlar::default();
+        ham.komut.push(komut("ekranları kapat", "ekranlari_kapat"));
+        ham.komut.push(komut("{uygulama} aç", "uygulama_ac"));
+        ham.komut.push(komut("müziği durdur", "medya"));
+        ham.komut.push(komut("sonraki şarkı", "medya"));
+        let h = KomutHaritasi::olustur(&ham);
+        assert_eq!(satir_gosterimi(&ham, 0), "Tüm ekranları kapat");
+        assert_eq!(satir_gosterimi(&ham, 1), "Uygulama aç");
+        assert_eq!(satir_gosterimi(&ham, 3), "Medya tuşu — sonraki şarkı");
+        // Uygulama yok: açılım yok, varsayılan efekt bilinmez.
+        assert_eq!(h.varsayilan_efekt(1), None);
+    }
+
+    #[test]
+    fn kisayol_listesi_duzenleme_ve_uyarilar() {
+        use std::collections::HashSet;
+        let mut ham = HamAyarlar::default();
+        ham.komut.push(komut("ekranları kapat", "ekranlari_kapat"));
+        ham.komut.push(komut("masaüstünü göster", "masaustunu_goster"));
+        let ifadeler: HashSet<String> = KomutHaritasi::olustur(&ham).komutlar.iter().map(|k| k.ifade.clone()).collect();
+
+        assert_eq!(kisayol_ekle(&mut ham, "ctrl+alt+1", "Ekranları  KAPAT"), 0);
+        assert_eq!(kisayol_ekle(&mut ham, "Alt+Ctrl+1", "masaüstünü göster"), 1);
+        assert_eq!(kisayol_ekle(&mut ham, "a", "masaüstünü göster"), 2);
+        assert_eq!(kisayol_ekle(&mut ham, "ctrl+alt+2", "yok böyle"), 3);
+        assert_eq!(kisayol_ekle(&mut ham, "", ""), 4);
+        ham.palet_tusu = Some("ctrl+alt+2".into());
+        let u = kisayol_uyarilari(&ham, &ifadeler);
+        assert_eq!(u.satirlar[0], None, "büyük/küçük ve boşluk farkı eşleşmeyi bozmaz");
+        assert!(u.satirlar[1].as_deref().unwrap().contains("kısayol #1"), "{:?}", u.satirlar[1]);
+        assert!(u.satirlar[2].is_some(), "değiştiricisiz harf reddedilir");
+        assert!(u.satirlar[3].as_deref().unwrap().contains("komut paleti"), "palet tuşuyla çakışma önce bildirilir");
+        assert!(u.satirlar[4].is_some());
+        assert_eq!(u.palet, None);
+        assert!(Ayarlar::hamdan(&ham).is_err());
+
+        // Hatalı satırlar silinip düzeltilince uyarı kalmaz ve ayarlar geçerli olur.
+        sil(&mut ham.kisayol, 4);
+        sil(&mut ham.kisayol, 2);
+        sil(&mut ham.kisayol, 1);
+        ham.kisayol[1].ifade = "masaüstünü göster".into();
+        ham.kisayol[1].tuslar = "ctrl+alt+3".into();
+        assert_eq!(tasi(&mut ham.kisayol, 1, true), Some(0));
+        let u = kisayol_uyarilari(&ham, &ifadeler);
+        assert!(u.satirlar.iter().all(Option::is_none), "{u:?}");
+        let a = Ayarlar::hamdan(&ham).expect("geçerli");
+        assert_eq!(a.kisayollar[0].ifade, "masaüstünü göster");
+        assert_eq!(a.kisayollar[1].kisayol.metin, "ctrl+alt+1");
+
+        // Tuşla kipinde dinleme tuşu zorunlu; alkış açıksa komut gerekli.
+        ham.dinleme_kipi = komut::DinlemeKipi::Tusla;
+        ham.alkis.acik = true;
+        let u = kisayol_uyarilari(&ham, &ifadeler);
+        assert!(u.dinleme.is_some());
+        assert!(u.alkis.is_some());
+        ham.dinleme_tusu = Some("ctrl+alt+1".into());
+        ham.alkis.ifade = "ekranları kapat".into();
+        let u = kisayol_uyarilari(&ham, &ifadeler);
+        assert!(u.dinleme.is_none() && u.alkis.is_none());
+        assert!(u.satirlar[1].as_deref().unwrap().contains("dinleme"), "{u:?}");
+    }
+
+    #[test]
+    fn kisayol_hatasi_satir_rozetlerini_bozmaz() {
+        let mut ham = HamAyarlar::default();
+        ham.komut.push(komut("ekranları kapat", "ekranlari_kapat"));
+        kisayol_ekle(&mut ham, "ctrl+alt+1", "olmayan ifade");
+        assert!(Ayarlar::hamdan(&ham).is_err());
+        let h = KomutHaritasi::olustur(&ham);
+        assert_eq!(h.riskli(0), Some(true));
+        assert_eq!(hata_yeri(&Ayarlar::hamdan(&ham).unwrap_err()), HataYeri::Kisayol);
+    }
+
+    #[test]
+    fn kisayol_hata_yerleri() {
+        for m in ["kisayol #2: tuslar: x", "kısayol çakışması \"ctrl+alt+1\": a ile b", "dinleme_tusu: x", "palet_tusu: x", "alkis.ifade \"x\"", "dinleme_kipi \"tusla\" iken"] {
+            assert_eq!(hata_yeri(m), HataYeri::Kisayol, "{m}");
+        }
     }
 }

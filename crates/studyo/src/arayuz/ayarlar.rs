@@ -32,7 +32,20 @@ impl Uygulama {
         if self.ayarlar.ekranlar.is_none() {
             self.ayarlar.ekranlar = Some(eylemci::ekranlari_listele());
         }
+        let mut git: Option<super::Bolum> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // Bu ayarlar kendi bölümlerinde: burada yalnız yönlendirme (tekrar yok).
+            ui.horizontal_wrapped(|ui| {
+                ortak::ipucu(ui, "Tuş atamaları, dinleme kipi (sürekli / tuşla), komut paleti ve çift alkış:");
+                if ui.small_button("Kısayollar").clicked() {
+                    git = Some(super::Bolum::Kisayollar);
+                }
+                ortak::ipucu(ui, "  Komut başına efekt:");
+                if ui.small_button("Efektler › Komut efektleri").clicked() {
+                    git = Some(super::Bolum::Efektler);
+                }
+            });
+            ui.add_space(6.0);
             self.genel_karti(ui);
             ui.add_space(8.0);
             self.mikrofon_karti(ui);
@@ -43,6 +56,12 @@ impl Uygulama {
             ui.add_space(8.0);
             self.baslangic_karti(ui);
         });
+        if let Some(b) = git {
+            self.bolum_ac(b);
+            if b == super::Bolum::Efektler {
+                self.efektler.sekme_ac(super::efektler::Sekme::KomutEfektleri);
+            }
+        }
     }
 
     fn genel_karti(&mut self, ui: &mut Ui) {

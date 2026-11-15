@@ -7,7 +7,7 @@
 
 use crate::efekt::{Efekt, EfektAyari, EfektEkrani, Renk};
 use crate::ortak::{EfektOrtak, EfektOzel};
-use crate::turler::{EkranSecimi, MedyaTusu, YontemTercihi};
+use crate::turler::{DinlemeKipi, EkranSecimi, MedyaTusu, YontemTercihi};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -22,6 +22,12 @@ fn birakma_varsayilan() -> u32 {
 }
 fn olay_varsayilan() -> HamOlaylar {
     HamOlaylar::default()
+}
+fn dinleme_suresi_varsayilan() -> u32 {
+    6
+}
+fn alkis_hassasiyet_varsayilan() -> f64 {
+    0.6
 }
 
 /// Dosyanın tamamı.
@@ -50,6 +56,19 @@ pub struct HamAyarlar {
     pub windows_ile_baslat: bool,
     #[serde(default)]
     pub anlasilmayanlari_kaydet: bool,
+    /// "surekli" (varsayılan) | "tusla": tuşla kipinde mikrofon yalnız `dinleme_tusu`na basınca
+    /// `dinleme_suresi_sn` boyunca komut dinler.
+    #[serde(default)]
+    pub dinleme_kipi: DinlemeKipi,
+    /// "ctrl+alt+space" biçimi; `tusla` kipinde zorunlu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dinleme_tusu: Option<String>,
+    /// Tuş penceresinin süresi, 2-30 sn (varsayılan 6).
+    #[serde(default = "dinleme_suresi_varsayilan")]
+    pub dinleme_suresi_sn: u32,
+    /// Komut paletini açan kısayol (isteğe bağlı).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palet_tusu: Option<String>,
     /// false ise HİÇBİR efekt oynamaz (komutlar yine çalışır).
     #[serde(default = "acik")]
     pub efektler_acik: bool,
@@ -67,6 +86,9 @@ pub struct HamAyarlar {
     pub efekt_ortak: EfektOrtak,
     #[serde(default = "olay_varsayilan")]
     pub olaylar: HamOlaylar,
+    /// Çift alkış tetikleyicisi.
+    #[serde(default)]
+    pub alkis: HamAlkis,
     /// Efekt anahtarı ("portal") → o efektin ortak ayardan ayrılan alanları (yalnız istisna).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub efektler: BTreeMap<String, EfektOzel>,
@@ -76,6 +98,8 @@ pub struct HamAyarlar {
     pub uygulama: Vec<HamUygulama>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sahne: Vec<HamSahne>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kisayol: Vec<HamKisayol>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub komut: Vec<HamKomut>,
 }
@@ -93,16 +117,22 @@ impl Default for HamAyarlar {
             windows_ile_baslat: false,
             // Gizlilik: konuşma metni diske yalnız kullanıcı açıkça isterse yazılır.
             anlasilmayanlari_kaydet: false,
+            dinleme_kipi: DinlemeKipi::Surekli,
+            dinleme_tusu: None,
+            dinleme_suresi_sn: dinleme_suresi_varsayilan(),
+            palet_tusu: None,
             efektler_acik: true,
             olay_efektleri_acik: true,
             guncelleme_otomatik: true,
             sessiz_saatler: Vec::new(),
             efekt_ortak: EfektOrtak::default(),
             olaylar: HamOlaylar::default(),
+            alkis: HamAlkis::default(),
             efektler: BTreeMap::new(),
             ekran: Vec::new(),
             uygulama: Vec::new(),
             sahne: Vec::new(),
+            kisayol: Vec::new(),
             komut: Vec::new(),
         }
     }
@@ -128,6 +158,33 @@ impl HamAyarlar {
     /// hatayı görmek isteyen (Stüdyo) `toml_yaz_dene`yi kullanmalı.
     pub fn toml_yaz(&self) -> String {
         self.toml_yaz_dene().unwrap_or_else(|h| format!("# {h}\n"))
+    }
+}
+
+/// Bir `[[kisayol]]` satırı: genel kısayol → komut.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HamKisayol {
+    /// "ctrl+alt+1" biçimi.
+    pub tuslar: String,
+    /// Tam açılmış, tetiksiz ifade; bir komutla birebir eşleşmelidir ("sesi yüzde elli yap").
+    pub ifade: String,
+}
+
+/// `[alkis]` tablosu: çift alkışın çalıştıracağı komut.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct HamAlkis {
+    pub acik: bool,
+    /// Tam açılmış, tetiksiz ifade. `acik = false` iken boş olabilir.
+    pub ifade: String,
+    /// 0.0-1.0.
+    pub hassasiyet: f64,
+}
+
+impl Default for HamAlkis {
+    fn default() -> Self {
+        HamAlkis { acik: false, ifade: String::new(), hassasiyet: alkis_hassasiyet_varsayilan() }
     }
 }
 
@@ -184,6 +241,10 @@ pub struct HamKomut {
     /// `tus_gonder` için tuş birleşimi ("ctrl+shift+esc").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tuslar: Option<String>,
+    /// true ise her ifade için "<süre> sonra <ifade>" zamanlı açılımları da üretilir. Yalnız
+    /// sabit eylemli komutlarda ve `{ekran}` şablonunda.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub zamanlanabilir: bool,
 }
 
 /// Bir `[[sahne]]`: tek cümleyle çalışan eylem dizisi.

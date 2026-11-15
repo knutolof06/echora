@@ -15,7 +15,19 @@ pub enum Eslesme<'a> {
     Yok,
 }
 
+/// Düzlenmiş, tetiksiz ifadenin birebir eşleştiği komut.
+pub(crate) fn komut_bul_listede<'a>(komutlar: &'a [Komut], ifade: &str) -> Option<&'a Komut> {
+    let ifade = duzle(ifade);
+    komutlar.iter().find(|k| k.ifade == ifade)
+}
+
 impl Ayarlar {
+    /// İfadeyi (düzlenerek) komutlarla birebir eşler; tetik kelimesi YOKTUR ve riskli/risksiz
+    /// ayrımı yapılmaz. Kısayol, alkış ve komut paleti bu yolu kullanır (kullanıcı niyeti açık).
+    pub fn komut_bul(&self, ifade: &str) -> Option<&Komut> {
+        komut_bul_listede(&self.komutlar, ifade)
+    }
+
     /// Tanıyıcıya verilecek ifadeler: her komutun yalın ve "<tetik> <ifade>" biçimi, yinelenmeden.
     /// Riskli komutların yalın biçimi de gramerdedir; böylece "tetik gerekli" durumu ayırt edilir.
     pub fn gramer_ifadeleri(&self) -> Vec<String> {

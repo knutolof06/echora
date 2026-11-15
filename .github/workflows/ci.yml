@@ -108,6 +108,13 @@ jobs:
           cargo build --workspace --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # Kurulum exe'si (uygulama/kurulum) workspace ile birlikte PAKETSIZ derlenir (ECHORA_PAKET_ZIP yok);
+      # paketli surum yalniz surum hattinda uretilir. Paketsiz exe pencere acmadan 2 ile cikmali.
+      - name: Kurulum exe'si (paketsiz) acilis denetimi
+        run: |
+          $p = Start-Process -FilePath ".\target\debug\echora-kurulum.exe" -ArgumentList "--dogrula" -Wait -PassThru
+          if ($p.ExitCode -ne 2) { throw "Paketsiz kurulum exe'si 2 ile cikmaliydi, cikis: $($p.ExitCode)" }
+
       - name: Sina
         env:
           RUSTFLAGS: -D warnings

@@ -20,7 +20,8 @@ use komut::efekt::Olay as EkranOlayi;
 use komut::{Ayarlar, Eslesme, Eylem, Komut};
 use kulak::vad::{seviye, Bolutleyici, BolutleyiciAyar, Olay, WebrtcAlgilayici};
 use kulak::yakalama::Yakalayici;
-use kulak::PARCA_ORNEK;
+use kulak::{AlkisAlgilayici, PARCA_ORNEK};
+use crate::tus_penceresi::{konusma_karari, KonusmaKarari};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
@@ -33,6 +34,14 @@ const YINELEME_ARALIGI: Duration = Duration::from_millis(1500);
 const SALDIRGANLIK: u8 = 2;
 /// `GRAMER_ISARETI`: bu satır görülmediyse "eksik kelime yok" sonucuna güvenilmez.
 const GRAMER_ISARETI: &str = "UpdateGrammarFst";
+/// İki çift alkış arasında en az bu kadar beklenir (tek dizinin yankısı ikinci kez tetiklemesin).
+pub const ALKIS_SOGUMA: Duration = Duration::from_secs(2);
+/// Alkış algılama kapalı (paylaşılan değer; açıkken hassasiyetin f32 bitleri, hiçbir sonlu f32 bu
+/// bit dizisini vermez).
+const ALKIS_KAPALI: u32 = u32::MAX;
+/// Konuşma bölütü en az bu kadar VAD-konuşma parçası (180 ms) içerince "konuşma sürüyor" sayılır:
+/// alkışın kendisinin açtığı kısa bölüt alkış algılamayı engellemesin.
+const KONUSMA_PARCA_ESIGI: u32 = 6;
 
 /// Dinleme durumu (tepsi ipucu ve simgesi buna göre).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,8 +69,11 @@ impl Durum {
 #[derive(Debug)]
 pub enum UiIleti {
     Durum(Durum),
-    /// `olusma`: dinleyicinin komutu tanidigi an; UI bayat komutlari atar.
-    Komut { komut: Komut, olusma: Instant },
+    /// `olusma`: dinleyicinin komutu tanidigi an; UI bayat komutlari atar. `pencere`: komut bu
+    /// tuş penceresinde (nesil) söylendi; UI pencereyi kapatır.
+    Komut { komut: Komut, olusma: Instant, pencere: Option<u64> },
+    /// Çift alkış algılandı (soğuma ve engeller dinleyicide uygulandı).
+    Alkis { olusma: Instant },
     /// Komut dışı ekran ipucu (duyuldu, anlaşılmadı, tetik gerekli).
     Olay(EkranOlayi),
     Balon { baslik: String, metin: String, hata: bool },
@@ -119,6 +131,10 @@ impl DinleyiciKolu {
     pub fn ayar_gonder(&self, ayarlar: Ayarlar) {
         let _ = self.tx.send(Ileti::YeniAyar(Box::new(ayarlar)));
     }
+    /// Tuş penceresi açıldı (`Some(nesil)`) ya da kapandı (`None`).
+    pub fn tus_penceresi(&self, nesil: Option<u64>) {
+        let _ = self.tx.send(Ileti::TusPenceresi(nesil));
+    }
     /// Dinleyiciyi durdurur ve en cok `DURDURMA_BEKLEME` bekler (mikrofon serbest kalir). Dinleyici
     /// takilmissa (or. model yuklemesinde) gunluge yazilir ve beklenmeden devam edilir; surec
     /// cikarken is parcacigi zaten sonlanir.
@@ -152,6 +168,9 @@ enum Ileti {
     Duraklat,
     Surdur,
     YeniAyar(Box<Ayarlar>),
+    TusPenceresi(Option<u64>),
+    /// Yakalama geri çağrısındaki algılayıcı çift alkış buldu (nesil).
+    Alkis(u64),
     Dur,
 }
 
@@ -232,6 +251,20 @@ impl<T> TekCalisan<T> {
     }
 }
 
+/// Saf karar: son çift alkıştan bu yana `ALKIS_SOGUMA` geçti mi?
+pub fn alkis_izinli(son: Option<Instant>, simdi: Instant) -> bool {
+    son.is_none_or(|an| simdi.saturating_duration_since(an) >= ALKIS_SOGUMA)
+}
+
+/// Paylaşılan alkış değeri: kapalıysa `ALKIS_KAPALI`, açıksa hassasiyetin bitleri.
+fn alkis_degeri(a: &Ayarlar) -> u32 {
+    if a.alkis.acik {
+        a.alkis.hassasiyet.clamp(0.0, 1.0).to_bits()
+    } else {
+        ALKIS_KAPALI
+    }
+}
+
 /// Tamamlanan bir konuşmanın tanıma sonucuna verilecek tepki (saf karar).
 #[derive(Debug, PartialEq)]
 pub enum Tepki<'a> {
@@ -245,13 +278,26 @@ pub enum Tepki<'a> {
 /// - Boş sonuç (gürültü, "[unk]") hiçbir şey üretmez: gürültülü odada her birkaç saniyede bir gelir.
 /// - Eşleşme + güven eşiği geçildi: komut; tetik kelimesi eksik: `TetikGerekli`.
 /// - Eşleşme yok ya da güven eşiğin altında: `Anlasilmadi`. Dosyaya YALNIZ eşleşmeyen metin yazılır.
+#[cfg(test)]
 pub fn sonuc_karari<'a>(ayarlar: &'a Ayarlar, metin: &str, bos: bool, guven: f32) -> (Tepki<'a>, bool) {
+    sonuc_karari_kipli(ayarlar, metin, bos, guven, false)
+}
+
+/// `sonuc_karari`; `tetiksiz` (tuş penceresi) iken riskli komut tetik kelimesi olmadan da komuttur.
+pub fn sonuc_karari_kipli<'a>(
+    ayarlar: &'a Ayarlar,
+    metin: &str,
+    bos: bool,
+    guven: f32,
+    tetiksiz: bool,
+) -> (Tepki<'a>, bool) {
     if bos {
         return (Tepki::Yok, false);
     }
     let guvenli = guven >= ayarlar.guven_esigi;
     match ayarlar.esle(metin) {
         Eslesme::Komut(k) if guvenli => (Tepki::Komut(k), false),
+        Eslesme::TetikGerekli(k) if guvenli && tetiksiz => (Tepki::Komut(k), false),
         Eslesme::TetikGerekli(_) if guvenli => (Tepki::Olay(EkranOlayi::TetikGerekli), false),
         Eslesme::Yok => (Tepki::Olay(EkranOlayi::Anlasilmadi), true),
         _ => (Tepki::Olay(EkranOlayi::Anlasilmadi), false),
@@ -297,6 +343,11 @@ struct Dinleyici {
     durum: Option<Durum>,
     son_konusma: Instant,
     koruma: YinelemeKorumasi,
+    /// Açık tuş penceresinin nesli (UI bildirir; ilk komutta kendiliğinden kapanır).
+    pencere: Option<u64>,
+    /// Yakalama geri çağrısındaki alkış algılayıcısının ayarı (bkz. `alkis_degeri`).
+    alkis: Arc<AtomicU32>,
+    son_alkis: Option<Instant>,
 }
 
 impl Dinleyici {
@@ -321,6 +372,9 @@ impl Dinleyici {
             durum: None,
             son_konusma: Instant::now(),
             koruma: YinelemeKorumasi::default(),
+            pencere: None,
+            alkis: Arc::new(AtomicU32::new(ALKIS_KAPALI)),
+            son_alkis: None,
         }
     }
 
@@ -373,10 +427,17 @@ impl Dinleyici {
         let ses_seviyesi = Arc::clone(&self.seviye);
         let mut bolutleyici = Bolutleyici::new(WebrtcAlgilayici::new(SALDIRGANLIK), BolutleyiciAyar::default());
         let istenen = self.ayarlar.mikrofon.clone();
+        self.alkis.store(alkis_degeri(&self.ayarlar), Ordering::Relaxed);
+        let alkis_ayari = Arc::clone(&self.alkis);
+        let mut alkis_bitleri = ALKIS_KAPALI;
+        let mut alkis = AlkisAlgilayici::new(0.5);
+        // Bölütte VAD'in konuşma dediği parça sayısı (bkz. `KONUSMA_PARCA_ESIGI`).
+        let mut bolut_konusma = 0u32;
         let sonuc = Yakalayici::baslat_aygit(istenen.as_deref(), move |parca: &[i16]| {
             let _ = &nobetci; // geri çağrıyla birlikte yaşar ve onunla birlikte düşer
             // Sese tepki: ham seviye; yumuşatma efekt motorunda.
             ses_seviyesi.store(seviye(parca).to_bits(), Ordering::Relaxed);
+            let tx_bolut = &tx;
             bolutleyici.isle(parca, &mut |olay| {
                 let ileti = match olay {
                     Olay::KonusmaBasladi => Ileti::Basladi(nesil),
@@ -388,8 +449,26 @@ impl Dinleyici {
                     }
                     Olay::KonusmaBitti => Ileti::Bitti(nesil),
                 };
-                let _ = tx.send(ileti);
+                let _ = tx_bolut.send(ileti);
             });
+            // Çift alkış: yalnız ayarda açıkken; akan parça üstünde ucuz, bellek ayırmayan hesap.
+            let bitler = alkis_ayari.load(Ordering::Relaxed);
+            if bitler != alkis_bitleri {
+                if alkis_bitleri == ALKIS_KAPALI {
+                    alkis = AlkisAlgilayici::new(f32::from_bits(bitler));
+                } else if bitler != ALKIS_KAPALI {
+                    alkis.hassasiyet_ayarla(f32::from_bits(bitler));
+                }
+                alkis_bitleri = bitler;
+            }
+            if !bolutleyici.konusuyor_mu() {
+                bolut_konusma = 0;
+            } else if bolutleyici.son_parca_konusma_mi() {
+                bolut_konusma = bolut_konusma.saturating_add(1);
+            }
+            if bitler != ALKIS_KAPALI && alkis.isle(parca, bolut_konusma >= KONUSMA_PARCA_ESIGI) {
+                let _ = tx.send(Ileti::Alkis(nesil));
+            }
         });
         match sonuc {
             Ok(y) => {
@@ -478,6 +557,8 @@ impl Dinleyici {
             self.sozluk_denetle();
         }
         let mut basladi_nesil: Option<u64> = None;
+        // Bölüt başladığında açık olan tuş penceresi (o bölüt tetiksiz işlenir).
+        let mut bolut_penceresi: Option<u64> = None;
 
         loop {
             // En yakın zamanlı olaya kadar bekle; hiçbiri yoksa süresiz bekle (boşta sıfır uyanma).
@@ -519,6 +600,7 @@ impl Dinleyici {
                 Some(Ileti::YeniAyar(a)) => {
                     let mikrofon_degisti = a.mikrofon != self.ayarlar.mikrofon;
                     self.ayarlar = *a;
+                    self.alkis.store(alkis_degeri(&self.ayarlar), Ordering::Relaxed);
                     self.motor = None; // gramer değişti; bir sonraki konuşmada yeniden kurulur
                     self.model_coz();
                     if !self.duraklatildi {
@@ -544,13 +626,40 @@ impl Dinleyici {
                         );
                     }
                 }
+                Some(Ileti::TusPenceresi(p)) => self.pencere = p,
+                Some(Ileti::Alkis(n)) => {
+                    if n != self.nesil || self.duraklatildi || !self.ayarlar.alkis.acik {
+                        continue;
+                    }
+                    // Alkış da mikrofondan gelir: sessiz saat / tam ekran engeli uygulanır.
+                    if crate::dikkat::engel(&self.ayarlar, &self.ortam).is_some() {
+                        crate::gunluk::yaz("çift alkış yok sayıldı (sessiz saat / tam ekran)");
+                        continue;
+                    }
+                    let simdi = Instant::now();
+                    if !alkis_izinli(self.son_alkis, simdi) {
+                        continue;
+                    }
+                    self.son_alkis = Some(simdi);
+                    self.ui.gonder(UiIleti::Alkis { olusma: simdi });
+                }
                 Some(Ileti::Basladi(n)) => {
                     if n != self.nesil || self.duraklatildi {
                         continue;
                     }
+                    // Tuşla kipinde pencere dışı konuşma tümden atılır (model yüklenmez).
+                    let karar = konusma_karari(self.ayarlar.dinleme_kipi, self.pencere.is_some());
+                    if karar == KonusmaKarari::Yoksay {
+                        basladi_nesil = None;
+                        continue;
+                    }
+                    bolut_penceresi = if karar == KonusmaKarari::Tetiksiz { self.pencere } else { None };
                     // Sessiz saat / tam ekran: bu konuşma tümden yok sayılır (model yüklenmez,
                     // parçalar ve Bitti atılır). İpucu yalnız durum değişince güncellenir; balon yok.
-                    if let Some(e) = crate::dikkat::engel(&self.ayarlar, &self.ortam) {
+                    // Tuş penceresinde engel yok (kullanıcı tuşa bastı).
+                    let engel =
+                        if bolut_penceresi.is_some() { None } else { crate::dikkat::engel(&self.ayarlar, &self.ortam) };
+                    if let Some(e) = engel {
                         basladi_nesil = None;
                         self.durum_bildir(match e {
                             crate::dikkat::Engel::SessizSaat => Durum::SessizSaat,
@@ -590,13 +699,23 @@ impl Dinleyici {
                     let sonuc = taniyici.bitir();
                     self.son_konusma = Instant::now();
                     // Tanınan-ama-eşleşmeyen metin günlüğe YAZILMAZ (yalnız anlaşılmayanlar dosyasına).
-                    let (tepki, kaydet) =
-                        sonuc_karari(&self.ayarlar, &sonuc.metin, sonuc.bos_mu(), sonuc.en_dusuk_guven());
+                    let pencere = bolut_penceresi.take();
+                    let (tepki, kaydet) = sonuc_karari_kipli(
+                        &self.ayarlar,
+                        &sonuc.metin,
+                        sonuc.bos_mu(),
+                        sonuc.en_dusuk_guven(),
+                        pencere.is_some(),
+                    );
                     match tepki {
                         Tepki::Yok => {}
                         Tepki::Komut(k) => {
+                            // Pencerede ilk komut pencereyi kapatır (sonraki konuşma tetiksiz olmaz).
+                            if pencere.is_some() && self.pencere == pencere {
+                                self.pencere = None;
+                            }
                             if self.koruma.izin_ver(&k.eylem, Instant::now()) {
-                                self.ui.gonder(UiIleti::Komut { komut: k.clone(), olusma: Instant::now() });
+                                self.ui.gonder(UiIleti::Komut { komut: k.clone(), olusma: Instant::now(), pencere });
                             }
                         }
                         Tepki::Olay(o) => self.ui.gonder(UiIleti::Olay(o)),
@@ -787,6 +906,40 @@ mod testler {
         assert_eq!(sonuc_karari(&a, "krom aç", false, 0.1), (Tepki::Olay(EkranOlayi::Anlasilmadi), false));
         let dusuk = sonuc_karari(&a, "ekranları kapat", false, 0.1);
         assert_eq!(dusuk, (Tepki::Olay(EkranOlayi::Anlasilmadi), false));
+    }
+
+    #[test]
+    fn tus_penceresinde_riskli_komut_tetiksiz() {
+        let a = ayarlar();
+        // Pencere dışı: tetik gerekli; pencerede: komut.
+        assert_eq!(sonuc_karari_kipli(&a, "ekranları kapat", false, 0.9, false).0, Tepki::Olay(EkranOlayi::TetikGerekli));
+        assert!(matches!(sonuc_karari_kipli(&a, "ekranları kapat", false, 0.9, true).0, Tepki::Komut(k) if k.ifade == "ekranları kapat"));
+        // Tetikle söylense de olur; düşük güven ve eşleşmeyen metin yine anlaşılmadı.
+        assert!(matches!(sonuc_karari_kipli(&a, "atlas ekranları kapat", false, 0.9, true).0, Tepki::Komut(_)));
+        assert_eq!(sonuc_karari_kipli(&a, "ekranları kapat", false, 0.1, true).0, Tepki::Olay(EkranOlayi::Anlasilmadi));
+        assert_eq!(sonuc_karari_kipli(&a, "olmayan söz", false, 0.9, true), (Tepki::Olay(EkranOlayi::Anlasilmadi), true));
+    }
+
+    #[test]
+    fn alkis_sogumasi() {
+        let t = Instant::now();
+        assert!(alkis_izinli(None, t));
+        assert!(!alkis_izinli(Some(t), t + Duration::from_millis(1999)));
+        assert!(alkis_izinli(Some(t), t + ALKIS_SOGUMA));
+        // Saat geriye (sıra dışı an) izin verir sayılmaz: doyurmalı çıkarma 0 verir.
+        assert!(!alkis_izinli(Some(t + Duration::from_secs(5)), t));
+    }
+
+    #[test]
+    fn alkis_degeri_kapali_ve_acik() {
+        let mut a = ayarlar();
+        assert!(!a.alkis.acik);
+        assert_eq!(alkis_degeri(&a), ALKIS_KAPALI);
+        a.alkis.acik = true;
+        a.alkis.hassasiyet = 0.6;
+        assert_eq!(f32::from_bits(alkis_degeri(&a)), 0.6);
+        a.alkis.hassasiyet = 7.0;
+        assert_eq!(f32::from_bits(alkis_degeri(&a)), 1.0);
     }
 
     #[test]

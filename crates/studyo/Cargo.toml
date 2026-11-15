@@ -11,6 +11,7 @@ eylemci = { path = "../eylemci" }
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_System_Com",
     "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",

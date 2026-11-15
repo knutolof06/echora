@@ -7,7 +7,11 @@
 //!
 //! Kurulmamış bir exe (ör. açılmış sürüm zip'i) çift tıklanınca Stüdyo "Hoş geldin" kipinde açılır
 //! (`StudyoSecenekleri::ilk_kurulum`): kurulum sihirbazı (`arayuz::kurulum`, `kurulum`).
+//!
+//! Komut paleti (`palet_calistir`, `echora.exe --palet`) aynı crate'te ayrı, küçük bir penceredir;
+//! araması saf `arama` modülündedir.
 
+pub mod arama;
 mod arayuz;
 pub mod dosya;
 pub mod duzen;
@@ -18,13 +22,17 @@ pub mod kayit;
 pub mod kurulum;
 mod motor;
 pub mod onizleme;
+mod palet;
 pub mod sozluk;
+pub mod tus;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
+
+pub use palet::{palet_calistir, palet_calistir_ornek, PaletSecenekleri};
 
 pub struct StudyoSecenekleri {
     /// `%APPDATA%\Echora\ayarlar.toml` (ya da `--ayar`).
@@ -62,7 +70,7 @@ fn logo_simgesi() -> Option<egui::IconData> {
 
 /// Stüdyo penceresini açar; pencere kapanınca döner.
 pub fn calistir(s: StudyoSecenekleri) -> Result<(), String> {
-    calistir_ic(s, None)
+    calistir_ic(s, None, None)
 }
 
 /// Örnek/duman sınaması kipi: kayıt defterine HİÇBİR koşulda yazılmaz, kurulum dosya/kısayol
@@ -70,13 +78,19 @@ pub fn calistir(s: StudyoSecenekleri) -> Result<(), String> {
 /// `kurulum::dosyalari_kur` ve `ipc::gonder` reddeder). `sure` verilirse pencere o kadar sonra
 /// kendiliğinden kapanır (kaydedilmemiş değişiklik sorulmaz).
 pub fn calistir_ornek(s: StudyoSecenekleri, sure: Option<Duration>) -> Result<(), String> {
+    calistir_ornek_bolum(s, sure, None)
+}
+
+/// `calistir_ornek` gibi; `bolum` verilirse pencere o bölümde açılır ("kisayollar", "efektler",
+/// "komutlar", "ayarlar"…; bilinmeyen ad yok sayılır).
+pub fn calistir_ornek_bolum(s: StudyoSecenekleri, sure: Option<Duration>, bolum: Option<&str>) -> Result<(), String> {
     kayit::yazmayi_kapat();
     kurulum::yazmayi_kapat();
     ipc::kapat();
-    calistir_ic(s, sure)
+    calistir_ic(s, sure, bolum.map(str::to_string))
 }
 
-fn calistir_ic(s: StudyoSecenekleri, sure: Option<Duration>) -> Result<(), String> {
+fn calistir_ic(s: StudyoSecenekleri, sure: Option<Duration>, bolum: Option<String>) -> Result<(), String> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Echora Stüdyo")
         .with_inner_size([1000.0, 700.0])
@@ -94,7 +108,11 @@ fn calistir_ic(s: StudyoSecenekleri, sure: Option<Duration>) -> Result<(), Strin
         secenekler,
         Box::new(move |cc| {
             let kalin = arayuz::gorunumu_kur(&cc.egui_ctx);
-            Ok(Box::new(arayuz::Uygulama::new(s, sure, kalin)))
+            let mut u = arayuz::Uygulama::new(s, sure, kalin);
+            if let Some(b) = &bolum {
+                u.bolum_adla_ac(b);
+            }
+            Ok(Box::new(u))
         }),
     )
     .map_err(|h| format!("Stüdyo penceresi açılamadı: {h}"))

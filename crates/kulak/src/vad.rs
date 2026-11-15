@@ -80,6 +80,8 @@ pub struct Bolutleyici<A: KonusmaAlgilayici> {
     /// Tamponda dolu yuva sayısı.
     dolu: usize,
     konusuyor: bool,
+    /// Son işlenen parçanın VAD kararı.
+    son_konusma: bool,
     /// Boştayken: art arda konuşma parçası sayısı.
     ard_arda_konusma: u32,
     /// Konuşurken: art arda sessiz parça sayısı.
@@ -104,6 +106,7 @@ impl<A: KonusmaAlgilayici> Bolutleyici<A> {
             yaz: 0,
             dolu: 0,
             konusuyor: false,
+            son_konusma: false,
             ard_arda_konusma: 0,
             ard_arda_sessiz: 0,
             baslangic_parca,
@@ -113,6 +116,11 @@ impl<A: KonusmaAlgilayici> Bolutleyici<A> {
 
     pub fn konusuyor_mu(&self) -> bool {
         self.konusuyor
+    }
+
+    /// Son işlenen parça VAD'e göre konuşma mıydı (bölüt durumundan bağımsız, ham karar).
+    pub fn son_parca_konusma_mi(&self) -> bool {
+        self.son_konusma
     }
 
     fn tampona_yaz(&mut self, parca: &[i16]) {
@@ -131,6 +139,7 @@ impl<A: KonusmaAlgilayici> Bolutleyici<A> {
     /// `bitis_sessizlik_ms` kadar kesintisiz sessizlikte `KonusmaBitti` verilir.
     pub fn isle(&mut self, parca: &[i16], olay: &mut dyn FnMut(Olay<'_>)) {
         let konusma = self.algilayici.konusma_mi(parca);
+        self.son_konusma = konusma;
 
         if self.konusuyor {
             olay(Olay::Parca(parca));

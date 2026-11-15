@@ -4,7 +4,7 @@ use crate::{Ayarlar, Eslesme, Eylem};
 use std::path::Path;
 
 /// Varsayılan dosyadaki komut sayısı (şablon açılımları dahil).
-const VARSAYILAN_KOMUT_SAYISI: usize = 145;
+const VARSAYILAN_KOMUT_SAYISI: usize = 228;
 
 
 fn coz_ok(metin: &str) -> Ayarlar {

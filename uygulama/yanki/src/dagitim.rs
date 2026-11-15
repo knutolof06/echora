@@ -39,6 +39,41 @@ pub enum KomutKarari {
     Duraklatilmis,
 }
 
+/// Komutun nereden geldiği. Tetik kuralı yalnız sesli komutlarda (dinleyicide) uygulanır; burada
+/// dinleme duraklatmasının komutu durdurup durdurmayacağı belirlenir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KomutKaynagi {
+    /// Mikrofon (dinleyici); tuş penceresinde söylenen komut da.
+    Ses,
+    /// Stüdyo "dene" ya da komut paleti (IPC).
+    Studyo,
+    /// Genel kısayol.
+    Kisayol,
+    /// Çift alkış (mikrofondan).
+    Alkis,
+    /// Süresi dolan zamanlı komut.
+    Zamanlayici,
+}
+
+impl KomutKaynagi {
+    /// Dinleme duraklatılmışken de çalışır mı? Kullanıcının açık eylemi (Stüdyo, palet, tuş) ve
+    /// önceden kurulmuş zamanlayıcı çalışır; mikrofondan gelenler (ses, alkış) çalışmaz.
+    pub fn duraklatmayi_asar(self) -> bool {
+        !matches!(self, KomutKaynagi::Ses | KomutKaynagi::Alkis)
+    }
+
+    /// Günlük satırı eki.
+    pub fn etiket(self) -> &'static str {
+        match self {
+            KomutKaynagi::Ses => "",
+            KomutKaynagi::Studyo => " (Stüdyo)",
+            KomutKaynagi::Kisayol => " (kısayol)",
+            KomutKaynagi::Alkis => " (alkış)",
+            KomutKaynagi::Zamanlayici => " (zamanlayıcı)",
+        }
+    }
+}
+
 /// Saf karar: önce duraklatma/kapanma, sonra bayatlık.
 pub fn komut_karari(olusma: Instant, simdi: Instant, duraklatildi: bool) -> KomutKarari {
     if duraklatildi {
@@ -95,7 +130,10 @@ pub fn bekleyen_karari(yeni: &Eylem, bekleyen_var: bool) -> BekleyenKarari {
     }
     match yeni {
         Eylem::GeriAl => BekleyenKarari::YalnizIptal,
-        Eylem::EkranlariAc | Eylem::DinlemeyiDuraklat | Eylem::Cik => BekleyenKarari::IptalEtVeCalistir,
+        // İptal eden komutlar bekleyen kapatmayı da iptal eder ("zamanlayıcı iptal" dahil).
+        Eylem::EkranlariAc | Eylem::DinlemeyiDuraklat | Eylem::Cik | Eylem::ZamanlayicilariIptal => {
+            BekleyenKarari::IptalEtVeCalistir
+        }
         e if efekt_sonrasi_mi(e) => BekleyenKarari::YerineGec,
         _ => BekleyenKarari::EfektsizCalistir,
     }
@@ -117,6 +155,8 @@ pub enum Ters {
     Medya(MedyaTusu),
     /// Sahne: adımların tersleri, UYGULANACAK sırada (yani adımların ters sırası).
     Bilesik(Vec<Ters>),
+    /// Zamanlı komutun tersi: o zamanlayıcıyı iptal etmek. `Sistem`'e dokunmaz; UI uygular.
+    Zamanlayici(u64),
 }
 
 /// Yığına giren kayıt.
@@ -128,7 +168,7 @@ pub enum Kayit {
 }
 
 /// Eylemden sonra uygulamanın (UI katmanının) yapması gereken iş.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Etki {
     Tamam,
     Duraklat,
@@ -138,6 +178,9 @@ pub enum Etki {
     YenidenYukle,
     /// Sahne adımlarını UI iş parçacığı zamanlayıcıyla yürütür.
     Sahne(String),
+    /// UI zamanlayıcı kurar; geri al kaydını (`Ters::Zamanlayici`) kimlikle UI ekler.
+    Zamanla { dakika: u32, eylem: Eylem, gosterim: String },
+    ZamanlayicilariIptal,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -289,6 +332,10 @@ pub fn dagit(sistem: &mut dyn Sistem, imzaci: &dyn PencereImzaci, eylem: &Eylem)
         Eylem::GeriAl => uygulama_eylemi(Etki::GeriAl, None),
         Eylem::Sahne { ad } => uygulama_eylemi(Etki::Sahne(ad.clone()), None),
         Eylem::Cik => uygulama_eylemi(Etki::Cik, None),
+        Eylem::Zamanla { dakika, eylem, gosterim } => {
+            uygulama_eylemi(Etki::Zamanla { dakika: *dakika, eylem: (**eylem).clone(), gosterim: gosterim.clone() }, None)
+        }
+        Eylem::ZamanlayicilariIptal => uygulama_eylemi(Etki::ZamanlayicilariIptal, Some(Kayit::Alinamaz)),
     })
 }
 
@@ -313,6 +360,8 @@ pub fn ters_uygula(sistem: &mut dyn Sistem, imzaci: &dyn PencereImzaci, ters: &T
         }
         Ters::MasaustunuGoster => sistem.masaustunu_goster(),
         Ters::Medya(t) => sistem.medya_tusu(*t),
+        // UI zamanlayıcıyı iptal eder (bkz. `tepsi::geri_al`).
+        Ters::Zamanlayici(_) => Ok(()),
         Ters::Bilesik(parcalar) => {
             let hatalar: Vec<String> =
                 parcalar.iter().filter_map(|t| ters_uygula(sistem, imzaci, t).err()).collect();
@@ -403,6 +452,11 @@ impl GeriAlYigini {
         self.kayitlar.back()
     }
 
+    /// Koşulu sağlayan kayıtları yığından çıkarır (ör. iptal edilen / dolan zamanlayıcının kaydı).
+    pub fn sil(&mut self, kosul: impl Fn(&Kayit) -> bool) {
+        self.kayitlar.retain(|k| !kosul(&k.kayit));
+    }
+
     /// Son kaydı geri alır. Geri alınamaz kayıt yığında kalır ve ATLANMAZ.
     pub fn geri_al(&mut self, sistem: &mut dyn Sistem, imzaci: &dyn PencereImzaci) -> GeriAlSonucu {
         self.geri_al_an(sistem, imzaci, Instant::now())
@@ -457,6 +511,8 @@ pub fn eylem_ozeti(e: &Eylem) -> String {
         Eylem::Sahne { ad } => format!("{ad} sahnesi"),
         Eylem::KomutCalistir(_) => "komut çalıştır".into(),
         Eylem::TusGonder(t) => format!("tuş: {t}"),
+        Eylem::Zamanla { dakika, gosterim, .. } => format!("{dakika} dk sonra: {gosterim}"),
+        Eylem::ZamanlayicilariIptal => "zamanlayıcıları iptal et".into(),
     }
 }
 
@@ -629,7 +685,11 @@ mod testler {
         Eylem::UygulamaAc { ad: "Krom".into(), hedef: "chrome".into(), argumanlar: vec!["--a".into(), "b".into()] }
     }
 
-    /// Tüm eylemler (28).
+    fn zamanla() -> Eylem {
+        Eylem::Zamanla { dakika: 5, eylem: Box::new(Eylem::Uyut), gosterim: "Bilgisayarı uyut".into() }
+    }
+
+    /// Tüm eylemler (30).
     fn tum_eylemler() -> Vec<Eylem> {
         vec![
             Eylem::EkranlariKapat,
@@ -660,6 +720,8 @@ mod testler {
             Eylem::Sahne { ad: "İş".into() },
             Eylem::KomutCalistir("echo a".into()),
             Eylem::TusGonder("ctrl+c".into()),
+            zamanla(),
+            Eylem::ZamanlayicilariIptal,
         ]
     }
 
@@ -746,6 +808,12 @@ mod testler {
             (Eylem::GeriAl, Etki::GeriAl, None),
             (Eylem::Cik, Etki::Cik, None),
             (Eylem::Sahne { ad: "Gece".into() }, Etki::Sahne("Gece".into()), None),
+            (
+                zamanla(),
+                Etki::Zamanla { dakika: 5, eylem: Eylem::Uyut, gosterim: "Bilgisayarı uyut".into() },
+                None,
+            ),
+            (Eylem::ZamanlayicilariIptal, Etki::ZamanlayicilariIptal, Some(Kayit::Alinamaz)),
         ];
         for (e, etki, kayit) in beklenen {
             let mut s = Sahte { hatali: vec!["*"], ..Default::default() };
@@ -767,6 +835,8 @@ mod testler {
                     | Eylem::GeriAl
                     | Eylem::Cik
                     | Eylem::Sahne { .. }
+                    | Eylem::Zamanla { .. }
+                    | Eylem::ZamanlayicilariIptal
             );
             assert_eq!(r.is_ok(), uygulama_duzeyi, "{e:?}: {r:?}");
         }
@@ -867,6 +937,7 @@ mod testler {
             Eylem::DinlemeyiDuraklat,
             Eylem::StudyoyuAc,
             Eylem::AyarlariYenidenYukle,
+            Eylem::ZamanlayicilariIptal,
         ];
         for e in alinamaz {
             let (r, _) = cagri(&e);
@@ -949,6 +1020,9 @@ mod testler {
         assert_eq!(bekleyen_karari(&Eylem::GeriAl, true), YalnizIptal);
         assert_eq!(bekleyen_karari(&Eylem::DinlemeyiDuraklat, true), IptalEtVeCalistir);
         assert_eq!(bekleyen_karari(&Eylem::Cik, true), IptalEtVeCalistir);
+        assert_eq!(bekleyen_karari(&Eylem::ZamanlayicilariIptal, true), IptalEtVeCalistir);
+        // Zamanlama bekleyeni etkilemez: zamanlayıcı kurulur, efekti oynatılmaz.
+        assert_eq!(bekleyen_karari(&zamanla(), true), EfektsizCalistir);
         // İkinci bir efekt-sonrası komut eskisinin yerine geçer.
         for e in [Eylem::EkranlariKapat, Eylem::AnaEkraniKapat, Eylem::EkraniKapat(EkranSecimi::Sol), Eylem::OturumuKilitle, Eylem::Uyut] {
             assert_eq!(bekleyen_karari(&e, true), YerineGec, "{e:?}");
@@ -956,8 +1030,10 @@ mod testler {
         // "krom aç" ve diğerleri: eylem hemen, efekt yok (bekleyenin efekti kesilmez).
         for e in tum_eylemler() {
             let k = bekleyen_karari(&e, true);
-            let ozel = matches!(e, Eylem::GeriAl | Eylem::EkranlariAc | Eylem::DinlemeyiDuraklat | Eylem::Cik)
-                || efekt_sonrasi_mi(&e);
+            let ozel = matches!(
+                e,
+                Eylem::GeriAl | Eylem::EkranlariAc | Eylem::DinlemeyiDuraklat | Eylem::Cik | Eylem::ZamanlayicilariIptal
+            ) || efekt_sonrasi_mi(&e);
             assert_eq!(k == EfektsizCalistir, !ozel, "{e:?}");
         }
         assert_eq!(bekleyen_karari(&uyg_ac(), true), EfektsizCalistir);
@@ -1069,5 +1145,35 @@ mod testler {
             assert!(!eylem_ozeti(&e).is_empty());
         }
         assert_eq!(eylem_ozeti(&Eylem::SesAyarla(30)), "ses %30");
+        assert_eq!(eylem_ozeti(&zamanla()), "5 dk sonra: Bilgisayarı uyut");
+    }
+
+    #[test]
+    fn zamanlayici_tersi_sisteme_dokunmaz_ve_silinebilir() {
+        let mut s = Sahte { hatali: vec!["*"], ..Default::default() };
+        let mut y = GeriAlYigini::default();
+        y.ekle("beş dakika sonra: Bilgisayarı uyut", Kayit::Ters(Ters::Zamanlayici(3)));
+        assert!(!Ters::Zamanlayici(3).ekran_acar());
+        assert_eq!(y.geri_al(&mut s, &imzaci()), GeriAlSonucu::Yapildi("beş dakika sonra: Bilgisayarı uyut".into()));
+        assert!(s.cagrilar.is_empty());
+        // Dolan/iptal edilen zamanlayıcının kaydı yığından silinir; diğerleri kalır.
+        y.ekle("a", Kayit::Ters(Ters::Zamanlayici(4)));
+        y.ekle("b", Kayit::Ters(Ters::SesSeviyesi(0.2)));
+        y.ekle("c", Kayit::Ters(Ters::Zamanlayici(5)));
+        y.sil(|k| *k == Kayit::Ters(Ters::Zamanlayici(4)));
+        assert_eq!(y.uzunluk(), 2);
+        assert_eq!(y.son().unwrap().gosterim, "c");
+    }
+
+    #[test]
+    fn kaynaklar_ve_duraklatma() {
+        use KomutKaynagi::*;
+        assert!(!Ses.duraklatmayi_asar());
+        assert!(!Alkis.duraklatmayi_asar());
+        for k in [Studyo, Kisayol, Zamanlayici] {
+            assert!(k.duraklatmayi_asar(), "{k:?}");
+        }
+        assert_eq!(Ses.etiket(), "");
+        assert_eq!(Kisayol.etiket(), " (kısayol)");
     }
 }
