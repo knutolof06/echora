@@ -74,6 +74,9 @@ pub enum UiIleti {
     Komut { komut: Komut, olusma: Instant, pencere: Option<u64> },
     /// Çift alkış algılandı (soğuma ve engeller dinleyicide uygulandı).
     Alkis { olusma: Instant },
+    /// Tuş penceresi (nesil) dinleyicide kapandı ama komut UI'ya gitmedi (yineleme koruması
+    /// reddetti): UI da penceresini ve ipucunu kapatsın.
+    PencereKapandi(u64),
     /// Komut dışı ekran ipucu (duyuldu, anlaşılmadı, tetik gerekli).
     Olay(EkranOlayi),
     Balon { baslik: String, metin: String, hata: bool },
@@ -348,6 +351,9 @@ struct Dinleyici {
     /// Yakalama geri çağrısındaki alkış algılayıcısının ayarı (bkz. `alkis_degeri`).
     alkis: Arc<AtomicU32>,
     son_alkis: Option<Instant>,
+    /// Yakalama geri çağrısı konuşma bölütlerini kanala göndersin mi? Tuşla kipinde pencere
+    /// kapalıyken hayır: parçalar hiç kopyalanıp gönderilmez (yalnız VAD ve alkış çalışır).
+    parca_izni: Arc<AtomicBool>,
 }
 
 impl Dinleyici {
@@ -375,7 +381,14 @@ impl Dinleyici {
             pencere: None,
             alkis: Arc::new(AtomicU32::new(ALKIS_KAPALI)),
             son_alkis: None,
+            parca_izni: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Bölütlerin kanala gönderilip gönderilmeyeceğini kipten ve pencereden günceller.
+    fn parca_izni_guncelle(&self) {
+        let izin = konusma_karari(self.ayarlar.dinleme_kipi, self.pencere.is_some()) != KonusmaKarari::Yoksay;
+        self.parca_izni.store(izin, Ordering::Relaxed);
     }
 
     fn durum_bildir(&mut self, d: Durum) {
@@ -429,6 +442,10 @@ impl Dinleyici {
         let istenen = self.ayarlar.mikrofon.clone();
         self.alkis.store(alkis_degeri(&self.ayarlar), Ordering::Relaxed);
         let alkis_ayari = Arc::clone(&self.alkis);
+        self.parca_izni_guncelle();
+        let parca_izni = Arc::clone(&self.parca_izni);
+        // Bölüt başında verilen karar bölüt boyunca geçerli (pencere ortada kapanırsa konuşma kesilmez).
+        let mut bolut_gonder = true;
         let mut alkis_bitleri = ALKIS_KAPALI;
         let mut alkis = AlkisAlgilayici::new(0.5);
         // Bölütte VAD'in konuşma dediği parça sayısı (bkz. `KONUSMA_PARCA_ESIGI`).
@@ -438,7 +455,15 @@ impl Dinleyici {
             // Sese tepki: ham seviye; yumuşatma efekt motorunda.
             ses_seviyesi.store(seviye(parca).to_bits(), Ordering::Relaxed);
             let tx_bolut = &tx;
+            let gonder = &mut bolut_gonder;
+            let izin = &parca_izni;
             bolutleyici.isle(parca, &mut |olay| {
+                if matches!(olay, Olay::KonusmaBasladi) {
+                    *gonder = izin.load(Ordering::Relaxed);
+                }
+                if !*gonder {
+                    return;
+                }
                 let ileti = match olay {
                     Olay::KonusmaBasladi => Ileti::Basladi(nesil),
                     Olay::Parca(p) => {
@@ -601,6 +626,7 @@ impl Dinleyici {
                     let mikrofon_degisti = a.mikrofon != self.ayarlar.mikrofon;
                     self.ayarlar = *a;
                     self.alkis.store(alkis_degeri(&self.ayarlar), Ordering::Relaxed);
+                    self.parca_izni_guncelle();
                     self.motor = None; // gramer değişti; bir sonraki konuşmada yeniden kurulur
                     self.model_coz();
                     if !self.duraklatildi {
@@ -626,7 +652,10 @@ impl Dinleyici {
                         );
                     }
                 }
-                Some(Ileti::TusPenceresi(p)) => self.pencere = p,
+                Some(Ileti::TusPenceresi(p)) => {
+                    self.pencere = p;
+                    self.parca_izni_guncelle();
+                }
                 Some(Ileti::Alkis(n)) => {
                     if n != self.nesil || self.duraklatildi || !self.ayarlar.alkis.acik {
                         continue;
@@ -713,9 +742,12 @@ impl Dinleyici {
                             // Pencerede ilk komut pencereyi kapatır (sonraki konuşma tetiksiz olmaz).
                             if pencere.is_some() && self.pencere == pencere {
                                 self.pencere = None;
+                                self.parca_izni_guncelle();
                             }
                             if self.koruma.izin_ver(&k.eylem, Instant::now()) {
                                 self.ui.gonder(UiIleti::Komut { komut: k.clone(), olusma: Instant::now(), pencere });
+                            } else if let Some(n) = pencere {
+                                self.ui.gonder(UiIleti::PencereKapandi(n));
                             }
                         }
                         Tepki::Olay(o) => self.ui.gonder(UiIleti::Olay(o)),

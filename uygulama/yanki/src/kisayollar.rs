@@ -5,7 +5,7 @@
 //! Kimlikler 0x100'den başlar. Başka bir uygulamanın tuttuğu kısayol kaydedilemez; o kısayol bir
 //! sonraki ayar yüklemesinde yeniden denenir.
 
-use komut::{Ayarlar, Kisayol, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
+use komut::{Ayarlar, DinlemeKipi, Kisayol, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT};
 
@@ -142,6 +142,43 @@ pub fn mesgul_metni(gorunumler: &[String]) -> String {
     }
 }
 
+/// Dinleyicinin uygulayacağı kip: tuşla kipinde dinleme tuşu kaydedilemediyse (başka uygulama
+/// tutuyor) geçici olarak sürekli kipe (tetik kuralıyla) düşülür; yoksa mikrofon hiçbir komutu
+/// duyamaz (kalıcı sağırlık). İkinci değer: düşüldü mü.
+pub fn etkin_kip(kip: DinlemeKipi, dinleme_tusu_kayitli: bool) -> (DinlemeKipi, bool) {
+    match kip {
+        DinlemeKipi::Tusla if !dinleme_tusu_kayitli => (DinlemeKipi::Surekli, true),
+        k => (k, false),
+    }
+}
+
+/// Kayıt sonrası gösterilecek TEK balon (başlık, metin) ya da hiçbiri. Balon yalnız durum
+/// değişince çıkar: sürekli kipe yeni düşüldüyse ya da meşgul kümesine yeni bir kısayol katıldıysa.
+/// Aynı meşgul küme her yeniden yüklemede yeniden bildirilmez. `mesgul` listeleri sıralıdır.
+pub fn kayit_bildirimi(
+    onceki_mesgul: &[String],
+    yeni_mesgul: &[String],
+    onceki_dusuk: bool,
+    yeni_dusuk: bool,
+    dinleme_tusu: Option<&str>,
+) -> Option<(String, String)> {
+    if yeni_dusuk && !onceki_dusuk {
+        let tus = dinleme_tusu.unwrap_or("Dinleme tuşu");
+        let mut m = format!(
+            "{tus} başka bir uygulamada kullanılıyor; tuşla dinleme yerine sürekli dinleniyor (tetik kelimesiyle). Tuşu Stüdyo > Kısayollar'dan değiştirebilirsiniz."
+        );
+        let digerleri: Vec<String> = yeni_mesgul.iter().filter(|g| Some(g.as_str()) != dinleme_tusu).cloned().collect();
+        if !digerleri.is_empty() {
+            m.push_str(&format!(" Ayrıca: {}.", mesgul_metni(&digerleri)));
+        }
+        return Some(("Echora: dinleme tuşu kullanılamıyor".into(), m));
+    }
+    if yeni_mesgul.iter().any(|g| !onceki_mesgul.contains(g)) {
+        return Some(("Echora: kısayol kullanılamıyor".into(), mesgul_metni(yeni_mesgul)));
+    }
+    None
+}
+
 /// `komut` sabitleri Win32'ninkilerle aynı olmalı.
 const _: () = assert!(MOD_ALT == 1 && MOD_CONTROL == 2 && MOD_SHIFT == 4 && MOD_WIN == 8);
 
@@ -161,6 +198,11 @@ pub struct Uygulama {
 }
 
 impl KisayolKayitlari {
+    /// Bu hedefe kayıtlı bir kısayol var mı?
+    pub fn kayitli_mi(&self, hedef: &KisayolHedefi) -> bool {
+        self.kayitli.iter().any(|k| k.hedef == *hedef)
+    }
+
     pub fn hedef(&self, kimlik: i32) -> Option<&KisayolHedefi> {
         self.kayitli.iter().find(|k| k.kimlik == kimlik).map(|k| &k.hedef)
     }
@@ -264,8 +306,45 @@ mod testler {
         // Varsayılan: dinleme ve palet tuşu, örnek kısayol yok.
         assert_eq!(v.iter().map(|(k, h)| (k.metin.as_str(), h.clone())).collect::<Vec<_>>(), [
             ("alt+win+space", KisayolHedefi::Dinleme),
-            ("ctrl+alt+p", KisayolHedefi::Palet),
+            ("ctrl+alt+shift+p", KisayolHedefi::Palet),
         ]);
+    }
+
+    #[test]
+    fn tusla_kipinde_tus_yoksa_surekliye_dusulur() {
+        assert_eq!(etkin_kip(DinlemeKipi::Tusla, true), (DinlemeKipi::Tusla, false));
+        assert_eq!(etkin_kip(DinlemeKipi::Tusla, false), (DinlemeKipi::Surekli, true));
+        // Sürekli kipte tuşun kaydı kipi değiştirmez.
+        assert_eq!(etkin_kip(DinlemeKipi::Surekli, false), (DinlemeKipi::Surekli, false));
+    }
+
+    #[test]
+    fn mesgul_balonu_yalniz_kume_degisince() {
+        let a = vec!["Ctrl+Alt+1".to_string()];
+        let ab = vec!["Ctrl+Alt+1".to_string(), "Ctrl+Alt+2".to_string()];
+        // İlk kez: balon; aynı küme yeniden yüklemede: balon yok.
+        assert!(kayit_bildirimi(&[], &a, false, false, None).is_some());
+        assert_eq!(kayit_bildirimi(&a, &a, false, false, None), None);
+        // Yeni meşgul katıldı: balon (tüm küme yazılır); biri çözüldü: balon yok.
+        let (_, m) = kayit_bildirimi(&a, &ab, false, false, None).unwrap();
+        assert_eq!(m, "Ctrl+Alt+1, Ctrl+Alt+2 kısayolları başka bir uygulamada kullanılıyor");
+        assert_eq!(kayit_bildirimi(&ab, &a, false, false, None), None);
+        assert_eq!(kayit_bildirimi(&a, &[], false, false, None), None);
+    }
+
+    #[test]
+    fn dinleme_tusu_dusmesi_tek_balon() {
+        let tus = "Ctrl+Alt+Boşluk";
+        let mesgul = vec![tus.to_string(), "Ctrl+Alt+1".to_string()];
+        let (b, m) = kayit_bildirimi(&[], &mesgul, false, true, Some(tus)).unwrap();
+        assert_eq!(b, "Echora: dinleme tuşu kullanılamıyor");
+        assert!(m.starts_with("Ctrl+Alt+Boşluk başka bir uygulamada kullanılıyor; tuşla dinleme yerine sürekli dinleniyor"));
+        assert!(m.contains("Stüdyo > Kısayollar"));
+        assert!(m.ends_with("Ayrıca: Ctrl+Alt+1 kısayolu başka bir uygulamada kullanılıyor."));
+        // Düşük kalmaya devam: yeniden bildirilmez.
+        assert_eq!(kayit_bildirimi(&mesgul, &mesgul, true, true, Some(tus)), None);
+        // Tuşla'ya dönüldü: balon yok (günlüğe yazılır).
+        assert_eq!(kayit_bildirimi(&mesgul, &[], true, false, Some(tus)), None);
     }
 
     #[test]

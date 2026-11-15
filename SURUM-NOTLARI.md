@@ -12,7 +12,7 @@ Release notunu buradan alır.
   tetik kelimesi istemez.
 - **Zamanlı komutlar:** "atlas yarım saat sonra bilgisayarı uyut", "zamanlayıcı iptal". Uygulama
   kapanınca zamanlayıcılar kaybolur.
-- **Komut paleti:** `Ctrl+Alt+P` ile komut arayıp çalıştırın.
+- **Komut paleti:** `Ctrl+Alt+Shift+P` ile komut arayıp çalıştırın.
 - **Çift alkış:** iki alkışla seçtiğiniz komutu çalıştırın (varsayılan kapalı).
 - **Kolay efekt seçimi:** Stüdyo > Efektler > Komut efektleri ile her komutun efektini seçip
   önizleyin.

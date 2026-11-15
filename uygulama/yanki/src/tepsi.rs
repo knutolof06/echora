@@ -52,7 +52,7 @@ use crate::dagitim::{
 };
 use crate::kisayollar::{self, KisayolHedefi, KisayolKayitlari};
 use crate::tus_penceresi::{BasisKarari, TusPenceresi};
-use crate::zamanlayici::{self, DolumKarari, Zamanlayici, ZamanlayiciListesi};
+use crate::zamanlayici::{self, DolumKarari, EklemeHatasi, Zamanlayici, ZamanlayiciListesi};
 use crate::dinleyici::{DinleyiciKolu, Durum, UiIleti, UiKuyrugu, WM_DINLEYICI};
 use crate::guncelleme::{self, DenetimSonucu, KurulumKarari, Surum};
 use crate::gunluk;
@@ -212,6 +212,11 @@ pub struct Uygulama {
     zamanlayicilar: ZamanlayiciListesi,
     /// Bas-konuş tuş penceresi.
     tus_penceresi: TusPenceresi,
+    /// Son kayıtta başka uygulamanın tuttuğu kısayollar (görünüm, sıralı); balon yalnız bu küme
+    /// değişince gösterilir.
+    mesgul_kisayollar: Vec<String>,
+    /// Tuşla kipinde dinleme tuşu kaydedilemedi: dinleyici geçici olarak sürekli kipte.
+    dinleme_tusu_yok: bool,
 }
 
 /// Tepsi simgeleri: exe'ye gömülü `.ico` kaynaklarından, küçük simge boyutunda (DPI'ye göre)
@@ -271,6 +276,8 @@ impl Uygulama {
             kisayollar: KisayolKayitlari::default(),
             zamanlayicilar: ZamanlayiciListesi::default(),
             tus_penceresi: TusPenceresi::default(),
+            mesgul_kisayollar: Vec::new(),
+            dinleme_tusu_yok: false,
             imzaci,
             ddc_kapali: Arc::new(AtomicBool::new(false)),
             sahne_studyodan: false,
@@ -338,9 +345,11 @@ fn ipucu(d: Durum) -> &'static str {
 
 /// Tepsi ipucu: durum satırı (tuş penceresi açıkken "dinliyor…", tuşla kipinde dinleme tuşu) ve
 /// varsa en yakın zamanlayıcı satırı.
-fn ipucu_olustur(d: Durum, tusla: Option<&str>, pencere_acik: bool, zamanlayici: Option<String>) -> String {
+/// `tus_yok`: tuşla kipinde dinleme tuşu kaydedilemedi, sürekli dinleniyor.
+fn ipucu_olustur(d: Durum, tusla: Option<&str>, tus_yok: bool, pencere_acik: bool, zamanlayici: Option<String>) -> String {
     let mut s = match (d, pencere_acik, tusla) {
         (Durum::Dinliyor | Durum::SessizSaat | Durum::TamEkran, true, _) => "Echora — dinliyor…".to_string(),
+        (Durum::Dinliyor, false, _) if tus_yok => "Echora — dinleme tuşu kullanılamıyor; sürekli dinleniyor".to_string(),
         (Durum::Dinliyor, false, Some(t)) => format!("Echora — tuşla dinleme ({t})"),
         _ => ipucu(d).to_string(),
     };
@@ -357,7 +366,16 @@ fn ipucu_metni(u: &Uygulama) -> String {
         _ => None,
     };
     let zaman = u.zamanlayicilar.ipucu_satiri(Instant::now());
-    ipucu_olustur(u.durum, tusla.as_deref(), u.tus_penceresi.acik().is_some(), zaman)
+    ipucu_olustur(u.durum, tusla.as_deref(), u.dinleme_tusu_yok, u.tus_penceresi.acik().is_some(), zaman)
+}
+
+/// Dinleyiciye gönderilen ayarlar: dinleme tuşu kaydedilemediyse kip geçici olarak sürekli.
+pub fn dinleyici_ayarlari(u: &Uygulama) -> Ayarlar {
+    let mut a = u.ayarlar.clone();
+    if u.dinleme_tusu_yok {
+        a.dinleme_kipi = komut::DinlemeKipi::Surekli;
+    }
+    a
 }
 
 fn simge_yukle(u: &Uygulama) -> HICON {
@@ -731,9 +749,6 @@ fn ayarlari_uygula(u: &mut Uygulama, a: Ayarlar) {
     if let Some(s) = u.sistem.as_mut() {
         s.yontemleri_uygula(&u.ayarlar.ekran_yontemleri, &a.ekran_yontemleri);
     }
-    if let Some(kol) = &u.kol {
-        kol.ayar_gonder(a.clone());
-    }
     // Otomatik denetim sonradan açıldıysa zamanlayıcı yeniden kurulur (kapatılınca zamanlayıcı
     // bir sonraki tetiklenişte kendini durdurur).
     let otomatik_acildi = a.guncelleme_otomatik && !u.ayarlar.guncelleme_otomatik;
@@ -742,7 +757,11 @@ fn ayarlari_uygula(u: &mut Uygulama, a: Ayarlar) {
         // SAFETY: pencere bu iş parçacığına ait; aynı kimlikli zamanlayıcı yenilenir.
         let _ = unsafe { SetTimer(Some(u.hwnd), GUNCELLEME_ZAMANLAYICI, GUNCELLEME_ILK_MS, None) };
     }
+    // Kısayollar dinleyiciden ÖNCE: dinleme tuşu kaydedilemezse dinleyici sürekli kipe düşer.
     kisayollari_kaydet(u);
+    if let Some(kol) = &u.kol {
+        kol.ayar_gonder(dinleyici_ayarlari(u));
+    }
     // Dinleme kipi / tuşu değişmiş olabilir.
     simge_guncelle(u);
 }
@@ -1540,10 +1559,25 @@ fn kisayollari_kaydet(u: &mut Uygulama) {
     if !r.eklenen.is_empty() {
         gunluk::yaz(&format!("kısayollar kaydedildi: {}", r.eklenen.join(", ")));
     }
-    if !r.mesgul.is_empty() {
-        let m = kisayollar::mesgul_metni(&r.mesgul);
-        gunluk::yaz(&format!("UYARI: {m}"));
-        balon(u, "Echora: kısayol kullanılamıyor", &m, true);
+    let mut mesgul = r.mesgul;
+    mesgul.sort();
+    if !mesgul.is_empty() {
+        gunluk::yaz(&format!("UYARI: {}", kisayollar::mesgul_metni(&mesgul)));
+    }
+    let dinleme_kayitli = u.kisayollar.kayitli_mi(&KisayolHedefi::Dinleme);
+    let (_, dusuk) = kisayollar::etkin_kip(u.ayarlar.dinleme_kipi, dinleme_kayitli);
+    let tus = u.ayarlar.dinleme_tusu.as_ref().map(|k| kisayollar::gorunum(&k.metin));
+    match (u.dinleme_tusu_yok, dusuk) {
+        (false, true) => gunluk::yaz("UYARI: dinleme tuşu kaydedilemedi; geçici olarak sürekli kipte (tetik kuralıyla) dinleniyor"),
+        (true, false) => gunluk::yaz("dinleme tuşu kaydedildi; tuşla dinlemeye dönüldü"),
+        _ => {}
+    }
+    let bildirim = kisayollar::kayit_bildirimi(&u.mesgul_kisayollar, &mesgul, u.dinleme_tusu_yok, dusuk, tus.as_deref());
+    u.mesgul_kisayollar = mesgul;
+    u.dinleme_tusu_yok = dusuk;
+    if let Some((baslik, metin)) = bildirim {
+        gunluk::yaz(&format!("balon: {baslik}: {metin}"));
+        balon(u, &baslik, &metin, true);
     }
 }
 
@@ -1649,7 +1683,20 @@ fn ms(d: Duration) -> u32 {
 
 /// `Eylem::Zamanla`: zamanlayıcıyı kurar ve geri al kaydını ekler (geri al → iptal).
 fn zamanlayici_kur(u: &mut Uygulama, dakika: u32, eylem: komut::Eylem, asil: &str, komut_gosterimi: &str) {
-    let k = u.zamanlayicilar.ekle(dakika, eylem, asil, Instant::now(), SystemTime::now());
+    let k = match u.zamanlayicilar.ekle(dakika, eylem, asil, Instant::now(), SystemTime::now()) {
+        Ok(k) => k,
+        Err(EklemeHatasi::ZatenKurulu(k)) => {
+            gunluk::yaz(&format!("zamanlayıcı zaten kurulu: {asil} — {dakika} dk (#{k}); yenisi kurulmadı"));
+            balon(u, "Echora", &format!("\"{asil}\" için {dakika} dakikalık zamanlayıcı zaten kurulu."), false);
+            return;
+        }
+        Err(EklemeHatasi::Dolu) => {
+            let n = zamanlayici::EN_COK_ZAMANLAYICI;
+            gunluk::yaz(&format!("zamanlayıcı kurulmadı: en çok {n} zamanlayıcı ({asil})"));
+            balon(u, "Echora: zamanlayıcı kurulmadı", &format!("En çok {n} zamanlayıcı kurulabilir; önce birini iptal edin."), true);
+            return;
+        }
+    };
     let sure = Duration::from_secs(u64::from(dakika) * 60);
     // SAFETY: pencere bu iş parçacığına ait.
     let _ = unsafe { SetTimer(Some(u.hwnd), dolum_kimligi(k), ms(sure), None) };
@@ -1716,6 +1763,10 @@ fn zamanlayici_tik(hwnd: HWND) {
     if u.kapaniyor {
         return;
     }
+    // Dolum zamanlayıcısı gelmemiş olsa da (kaçırılan WM_TIMER) süresi dolanlar burada da çalışır.
+    if !dolanlari_calistir(u) {
+        return;
+    }
     for (kimlik, gosterim) in u.zamanlayicilar.uyarilacaklar(Instant::now()) {
         gunluk::yaz(&format!("zamanlayıcı 1 dakika içinde dolacak: {gosterim} (#{kimlik})"));
         balon(u, "Echora: zamanlayıcı", &zamanlayici::uyari_metni(&gosterim), false);
@@ -1747,6 +1798,20 @@ fn zamanlayici_doldu(hwnd: HWND, kimlik_win: usize) {
         // SAFETY: yukarıdakiyle aynı.
         let _ = unsafe { SetTimer(Some(hwnd), kimlik_win, ms(kalan), None) };
     }
+    if !dolanlari_isle(u, dolanlar) {
+        return;
+    }
+    zamanlayici_tik_kur(u);
+    simge_guncelle(u);
+}
+
+/// Süresi dolanları listeden alıp çalıştırır. `false`: çıkış başladı (pencere yok edildi).
+fn dolanlari_calistir(u: &mut Uygulama) -> bool {
+    let dolanlar = u.zamanlayicilar.dolanlar(Instant::now());
+    dolanlari_isle(u, dolanlar)
+}
+
+fn dolanlari_isle(u: &mut Uygulama, dolanlar: Vec<Zamanlayici>) -> bool {
     for z in dolanlar {
         zamanlayici_temizle(u, &z);
         match zamanlayici::dolum_karari(z.bitis_duvar, SystemTime::now()) {
@@ -1763,13 +1828,12 @@ fn zamanlayici_doldu(hwnd: HWND, kimlik_win: usize) {
                 gunluk::yaz(&format!("zamanlayıcı doldu: {} (#{})", z.gosterim, z.kimlik));
                 let k = zamanlayici::asil_komut(&u.ayarlar, &z.eylem, &z.gosterim);
                 if u.sistem.is_some() && !komutu_baslat(u, k, KomutKaynagi::Zamanlayici) {
-                    return;
+                    return false;
                 }
             }
         }
     }
-    zamanlayici_tik_kur(u);
-    simge_guncelle(u);
+    true
 }
 
 // --- Dinleyici iletileri ---
@@ -1786,6 +1850,11 @@ fn ileti_isle(hwnd: HWND, ileti: UiIleti) -> bool {
             }
         }
         UiIleti::Komut { komut, olusma, pencere } => {
+            // Tuş penceresinde ilk tanınan komut pencereyi kapatır (eski pencerenin komutu yenisini
+            // değil) — komut bayat ya da duraklatılmış diye atılsa da.
+            if let Some(n) = pencere {
+                tus_penceresi_kapat(u, Some(n), "komut tanındı");
+            }
             match komut_karari(olusma, Instant::now(), u.duraklatildi || u.kapaniyor) {
                 KomutKarari::Bayat => {
                     gunluk::yaz(&format!("bayat komut atıldı: {}", komut.gosterim));
@@ -1797,12 +1866,9 @@ fn ileti_isle(hwnd: HWND, ileti: UiIleti) -> bool {
             if u.sistem.is_none() {
                 return true;
             }
-            // Tuş penceresinde ilk tanınan komut pencereyi kapatır (eski pencerenin komutu yenisini değil).
-            if let Some(n) = pencere {
-                tus_penceresi_kapat(u, Some(n), "komut çalıştı");
-            }
             return komutu_baslat(u, komut, KomutKaynagi::Ses);
         }
+        UiIleti::PencereKapandi(n) => tus_penceresi_kapat(u, Some(n), "komut yinelendi"),
         UiIleti::Alkis { olusma } => {
             match komut_karari(olusma, Instant::now(), u.duraklatildi || u.kapaniyor) {
                 KomutKarari::Bayat => {
@@ -2115,16 +2181,21 @@ mod testler {
 
     #[test]
     fn ipucu_tusla_pencere_ve_zamanlayici() {
-        assert_eq!(ipucu_olustur(Durum::Dinliyor, None, false, None), "Echora — dinliyor");
+        assert_eq!(ipucu_olustur(Durum::Dinliyor, None, false, false, None), "Echora — dinliyor");
         assert_eq!(
-            ipucu_olustur(Durum::Dinliyor, Some("Ctrl+Alt+Boşluk"), false, None),
+            ipucu_olustur(Durum::Dinliyor, Some("Ctrl+Alt+Boşluk"), false, false, None),
             "Echora — tuşla dinleme (Ctrl+Alt+Boşluk)"
         );
-        assert_eq!(ipucu_olustur(Durum::Dinliyor, Some("Ctrl+Alt+Boşluk"), true, None), "Echora — dinliyor…");
-        assert_eq!(ipucu_olustur(Durum::Dinliyor, None, true, None), "Echora — dinliyor…");
+        assert_eq!(ipucu_olustur(Durum::Dinliyor, Some("Ctrl+Alt+Boşluk"), false, true, None), "Echora — dinliyor…");
+        assert_eq!(ipucu_olustur(Durum::Dinliyor, None, false, true, None), "Echora — dinliyor…");
+        // Tuşla kipinde tuş kaydedilemedi: sürekli dinlendiği söylenir.
+        assert_eq!(
+            ipucu_olustur(Durum::Dinliyor, Some("Ctrl+Alt+Boşluk"), true, false, None),
+            "Echora — dinleme tuşu kullanılamıyor; sürekli dinleniyor"
+        );
         // Duraklatılmışken tuşla kip metni gösterilmez.
-        assert_eq!(ipucu_olustur(Durum::Duraklatildi, Some("Ctrl+Alt+Boşluk"), false, None), "Echora — duraklatıldı");
-        let z = ipucu_olustur(Durum::Dinliyor, None, false, Some("⏲ Bilgisayarı uyut — 29 dk".into()));
+        assert_eq!(ipucu_olustur(Durum::Duraklatildi, Some("Ctrl+Alt+Boşluk"), false, false, None), "Echora — duraklatıldı");
+        let z = ipucu_olustur(Durum::Dinliyor, None, false, false, Some("⏲ Bilgisayarı uyut — 29 dk".into()));
         assert_eq!(z, "Echora — dinliyor\n⏲ Bilgisayarı uyut — 29 dk");
         assert!(z.encode_utf16().count() < 128);
     }

@@ -2,7 +2,7 @@
 //! çakışma uyarıları, Dene), dinleme kipi (sürekli / tuşla), palet tuşu ve çift alkış (canlı
 //! mikrofon denemesiyle).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,7 +20,7 @@ use crate::arama::{self, AramaOgesi};
 use crate::duzen;
 
 /// Tuş yakalamanın hedefi.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Hedef {
     Satir(usize),
     Dinleme,
@@ -42,6 +42,11 @@ pub struct KisayollarDurumu {
     yakalanan: Option<Hedef>,
     /// Son yakalama denemesinin reddedilme nedeni (hedefiyle).
     yakalama_hatasi: Option<(Hedef, String)>,
+    /// Yakalamanın bu karede bittiği hedef: kutunun aynı karedeki tıklaması (Space/Enter) yok
+    /// sayılır, odak bırakılır.
+    bitti: Option<Hedef>,
+    /// "Elle yaz" kutularının metinleri (Win'li kısayollar egui'de yakalanamadığı için).
+    elle: HashMap<Hedef, String>,
     /// Açık komut seçicinin arama metni (aynı anda tek açılır liste açıktır).
     ifade_arama: String,
     alkis: Option<AlkisTesti>,
@@ -77,7 +82,7 @@ fn hedef_kaydir(h: &mut Option<Hedef>, silinen: usize) {
 
 /// Tuş yakalama kutusu. Tıklanınca yakalama başlar/biter.
 fn tus_kutusu(ui: &mut Ui, metin: Option<&str>, aktif: bool, basili: egui::Modifiers) -> egui::Response {
-    let boyut = egui::vec2(200.0, 28.0);
+    let boyut = egui::vec2(170.0, 28.0);
     let (rect, yanit) = ui.allocate_exact_size(boyut, egui::Sense::click());
     let v = ui.visuals();
     let (dolgu, cizgi) = if aktif {
@@ -123,7 +128,8 @@ fn ifade_secici(ui: &mut Ui, kimlik: impl egui::AsIdSalt, secili: &mut String, l
     let mut degisti = false;
     let yanit = egui::ComboBox::from_id_salt(kimlik)
         .selected_text(metin)
-        .width(300.0)
+        .width(230.0)
+        .truncate()
         .height(340.0)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show_ui(ui, |ui| {
@@ -186,6 +192,7 @@ impl Uygulama {
 
     /// Yakalama açıksa bu karenin tuş olaylarını alır (öteki parçalara ulaşmasınlar).
     fn tus_yakala(&mut self, ctx: &egui::Context) {
+        self.kisayollar.bitti = None;
         let Some(hedef) = self.kisayollar.yakalanan else { return };
         let olaylar = ctx.input_mut(|i| {
             let ev: Vec<Event> = i.events.iter().filter(|e| matches!(e, Event::Key { .. })).cloned().collect();
@@ -197,21 +204,15 @@ impl Uygulama {
             if key == Key::Escape && !modifiers.any() {
                 self.kisayollar.yakalanan = None;
                 self.kisayollar.yakalama_hatasi = None;
+                self.kisayollar.bitti = Some(hedef);
                 return;
             }
             match crate::tus::yakala(crate::tus::olay_tusu(key, physical_key), modifiers) {
                 Ok(metin) => {
-                    match hedef {
-                        Hedef::Satir(i) => {
-                            if let Some(k) = self.ham.kisayol.get_mut(i) {
-                                k.tuslar = metin;
-                            }
-                        }
-                        Hedef::Dinleme => self.ham.dinleme_tusu = Some(metin),
-                        Hedef::Palet => self.ham.palet_tusu = Some(metin),
-                    }
+                    self.tus_ata(hedef, metin);
                     self.kisayollar.yakalanan = None;
                     self.kisayollar.yakalama_hatasi = None;
+                    self.kisayollar.bitti = Some(hedef);
                     return;
                 }
                 Err(h) => self.kisayollar.yakalama_hatasi = Some((hedef, h)),
@@ -220,21 +221,68 @@ impl Uygulama {
         ctx.request_repaint_after(Duration::from_millis(200));
     }
 
-    /// Kutu + o hedefin yakalama hatası.
-    fn tus_alani(&mut self, ui: &mut Ui, hedef: Hedef, metin: Option<String>) {
-        let aktif = self.kisayollar.yakalanan == Some(hedef);
-        let basili = ui.input(|i| i.modifiers);
-        if tus_kutusu(ui, metin.as_deref(), aktif, basili).clicked() {
-            self.kisayollar.yakalanan = if aktif { None } else { Some(hedef) };
-            self.kisayollar.yakalama_hatasi = None;
+    /// Kanonik kısayol metnini hedef alana yazar.
+    fn tus_ata(&mut self, hedef: Hedef, metin: String) {
+        match hedef {
+            Hedef::Satir(i) => {
+                if let Some(k) = self.ham.kisayol.get_mut(i) {
+                    k.tuslar = metin;
+                }
+            }
+            Hedef::Dinleme => self.ham.dinleme_tusu = Some(metin),
+            Hedef::Palet => self.ham.palet_tusu = Some(metin),
         }
     }
 
-    fn yakalama_hatasi(&self, ui: &mut Ui, hedef: Hedef) {
+    /// Yakalama kutusu + "elle yaz" yedeği.
+    fn tus_alani(&mut self, ui: &mut Ui, hedef: Hedef, metin: Option<String>) {
+        let aktif = self.kisayollar.yakalanan == Some(hedef);
+        let basili = ui.input(|i| i.modifiers);
+        let yanit = tus_kutusu(ui, metin.as_deref(), aktif, basili);
+        if self.kisayollar.bitti == Some(hedef) {
+            // Yakalanan kombinasyondaki Space/Enter kutuyu "tıklatıp" yakalamayı yeniden açmasın.
+            yanit.surrender_focus();
+        } else if yanit.clicked() {
+            self.kisayollar.yakalanan = if aktif { None } else { Some(hedef) };
+            self.kisayollar.yakalama_hatasi = None;
+        }
+        let elle = self.kisayollar.elle.entry(hedef).or_default();
+        let kutu = ui
+            .add(egui::TextEdit::singleline(elle).desired_width(104.0).hint_text("elle yaz").font(egui::TextStyle::Monospace))
+            .on_hover_text("Win tuşlu kısayollar basılarak yakalanamaz: buraya yazıp Enter'a basın (ör. win+alt+1)");
+        if kutu.lost_focus() && !elle.trim().is_empty() {
+            if let Ok(k) = komut::kisayol_coz(elle) {
+                elle.clear();
+                self.tus_ata(hedef, k.metin);
+            }
+        }
+    }
+
+    /// Alanın altındaki satırlar: yakalama hatası, elle yazılanın doğrulaması, AltGr uyarısı.
+    fn alan_uyarilari(&self, ui: &mut Ui, hedef: Hedef, tuslar: Option<&str>) {
         if let Some((h, m)) = &self.kisayollar.yakalama_hatasi {
             if *h == hedef {
                 ui.label(RichText::new(format!("Kullanılamaz: {m}")).color(ortak::hata_rengi(ui)).size(12.5));
             }
+        }
+        if let Some(e) = self.kisayollar.elle.get(&hedef).filter(|e| !e.trim().is_empty()) {
+            match komut::kisayol_coz(e) {
+                Ok(k) => ui.label(RichText::new(format!("Geçerli: {} (Enter ile ata)", arama::kisayol_gorunumu(&k.metin))).color(ortak::basari_rengi(ui)).size(12.5)),
+                Err(h) => ui.label(RichText::new(format!("Elle yazılan geçersiz: {h}")).color(ortak::hata_rengi(ui)).size(12.5)),
+            };
+        }
+        if let Some(u) = tuslar.and_then(duzen::altgr_uyarisi) {
+            uyari_satiri(ui, u);
+        }
+    }
+
+    /// Dinleme/palet tuşunun varsayılanı (gömülü varsayılan ayar dosyasından).
+    fn varsayilan_tus(hedef: Hedef) -> Option<String> {
+        let v = crate::dosya::varsayilan_ham();
+        match hedef {
+            Hedef::Dinleme => v.dinleme_tusu,
+            Hedef::Palet => v.palet_tusu,
+            Hedef::Satir(_) => None,
         }
     }
 
@@ -295,13 +343,16 @@ impl Uygulama {
                         }
                     });
                 });
-                self.yakalama_hatasi(ui, Hedef::Satir(i));
-                if let Some(Some(u)) = uyarilar.satirlar.get(i) {
-                    ui.horizontal(|ui| {
-                        ui.add_space(30.0);
-                        uyari_satiri(ui, u);
+                let tuslar = self.ham.kisayol[i].tuslar.clone();
+                ui.horizontal(|ui| {
+                    ui.add_space(30.0);
+                    ui.vertical(|ui| {
+                        self.alan_uyarilari(ui, Hedef::Satir(i), Some(&tuslar));
+                        if let Some(Some(u)) = uyarilar.satirlar.get(i) {
+                            uyari_satiri(ui, u);
+                        }
                     });
-                }
+                });
                 ui.add_space(2.0);
             }
         });
@@ -351,8 +402,13 @@ impl Uygulama {
                                 self.kisayollar.yakalanan = None;
                             }
                         }
+                        let v = Self::varsayilan_tus(Hedef::Dinleme);
+                        if ui.add_enabled(v.is_some() && self.ham.dinleme_tusu != v, egui::Button::new("Varsayılana dön").small()).clicked() {
+                            self.ham.dinleme_tusu = v;
+                        }
                     });
-                    self.yakalama_hatasi(ui, Hedef::Dinleme);
+                    let t = self.ham.dinleme_tusu.clone();
+                    self.alan_uyarilari(ui, Hedef::Dinleme, t.as_deref());
                     if let Some(u) = &uyarilar.dinleme {
                         uyari_satiri(ui, u);
                     }
@@ -374,8 +430,13 @@ impl Uygulama {
                                 self.kisayollar.yakalanan = None;
                             }
                         }
+                        let v = Self::varsayilan_tus(Hedef::Palet);
+                        if ui.add_enabled(v.is_some() && self.ham.palet_tusu != v, egui::Button::new("Varsayılana dön").small()).clicked() {
+                            self.ham.palet_tusu = v;
+                        }
                     });
-                    self.yakalama_hatasi(ui, Hedef::Palet);
+                    let t = self.ham.palet_tusu.clone();
+                    self.alan_uyarilari(ui, Hedef::Palet, t.as_deref());
                     if let Some(u) = &uyarilar.palet {
                         uyari_satiri(ui, u);
                     }

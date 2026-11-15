@@ -421,7 +421,8 @@ fn calistir(s: Secenekler, veri_klasoru: PathBuf, guncelleme_klasoru: PathBuf) -
     let ui = dinleyici::UiKuyrugu::new(hwnd);
     uygulama.ui = Some(ui.clone());
     match dinleyici::baslat(dinleyici::Girdi {
-        ayarlar: yukleme.ayarlar,
+        // Kısayollar pencereyle kaydedildi: dinleme tuşu kaydedilemediyse kip sürekli olur.
+        ayarlar: tepsi::dinleyici_ayarlari(&uygulama),
         ui,
         ayar_klasoru,
         exe_dizini,

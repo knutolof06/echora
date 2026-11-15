@@ -115,6 +115,23 @@ jobs:
           $p = Start-Process -FilePath ".\target\debug\echora-kurulum.exe" -ArgumentList "--dogrula" -Wait -PassThru
           if ($p.ExitCode -ne 2) { throw "Paketsiz kurulum exe'si 2 ile cikmaliydi, cikis: $($p.ExitCode)" }
 
+      # Kurulum exe'si indirilenler klasorunden calisir: DLL arama yolundaki (exe klasoru) bir dosya
+      # ile ele gecirilmemesi icin ice aktardigi DLL listesi sabit tutulur. bcryptprimitives.dll
+      # KnownDLLs'te DEGIL (std ice aktarir), bu yuzden liste elle denetlenir; yeni ad cikarsa basarisiz olur.
+      - name: Kurulum exe'si ice aktarma listesi
+        run: |
+          $izinli = @('kernel32.dll','user32.dll','msvcrt.dll','ntdll.dll','api-ms-win-core-synch-l1-2-0.dll','bcryptprimitives.dll')
+          # Surum ikilisiyle ayni profil (debug std ek DLL'ler ice aktarir); paketsiz, yalniz ice aktarmalar icin.
+          cargo build --release --locked -p kurulum
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cikti = & objdump -p ".\target\release\echora-kurulum.exe"
+          if ($LASTEXITCODE -ne 0) { throw "objdump basarisiz" }
+          $bulunan = @($cikti | Select-String -Pattern 'DLL Name:\s*(\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value.ToLowerInvariant() } | Sort-Object -Unique)
+          Write-Host ("Ice aktarilan DLL'ler: " + ($bulunan -join ', '))
+          if ($bulunan.Count -eq 0) { throw "ice aktarma listesi okunamadi" }
+          $beklenmeyen = @($bulunan | Where-Object { $izinli -notcontains $_ })
+          if ($beklenmeyen.Count -gt 0) { throw ("Beklenmeyen DLL ice aktarimi: " + ($beklenmeyen -join ', ')) }
+
       - name: Sina
         env:
           RUSTFLAGS: -D warnings

@@ -18,12 +18,15 @@
 //!   harfler, müzik notaları ve konuşma bundan uzundur.
 //! - Geniş bant: tepe alt bloğunun sıfır geçiş oranı ≥ 0,12 (≈ 1 kHz üstü ağırlık merkezi). Alkışın
 //!   ağırlık merkezi ~2 kHz (≈ 0,25); 150-300 Hz temelli sesli konuşma ve tonal müzik ≈ 0,02-0,08.
-//! - Ön sessizlik: ilk alkıştan önce en az 150 ms sessizlik (gürültülü/müzikli ortamdaki rastgele
-//!   vuruşlar dizinin başı sayılmasın).
+//! - Ön sessizlik: ilk alkıştan önce en az 400 ms sessizlik. Klavye/kalem vuruşları ve davul
+//!   dizileri genellikle daha sık gelir; dizinin ortasındaki iki vuruş "ilk alkış" sayılmaz.
 //! - İki alkış arası (başlangıçtan başlangıca) 150-700 ms; şiddetleri en çok 4 kat (12 dB) farklı.
 //! - Ardından sessizlik: en az 400 ms, ve ritimli üçüncü alkışı da dışarıda bırakmak için en az
-//!   "aralık + 100 ms" (500 ms aralıklı üç alkış da tetiklemez). Sessizlik: parça tepesi eşiğin
-//!   yarısının altında ya da önceki parçanınkini aşmıyor (sönen yankı sessizliği bozmaz).
+//!   "aralık + 100 ms" (500 ms aralıklı üç alkış da tetiklemez). Sessizliğin ilk 150 ms'sinde
+//!   yankı toleransı var (eşiğin yarısının altı ya da önceki parçayı aşmayan, sönen ses); sonra
+//!   MUTLAK sessizlik istenir: parça tepesi `min(taban × 4, A / 4)`'ün altında. `A / 4` sınırı,
+//!   tabanın yükseldiği sürekli seste (ritmik müzik, oda gürültüsü) "sessizlik"in sağlanmasını
+//!   engeller: snare çifti + boşluk müzik altında sessizlik sayılmaz.
 //! - Konuşma bölütü sürüyorken (`konusma_suruyor`) algılama yapılmaz; dizi sıfırlanır.
 
 use crate::PARCA_MS;
@@ -54,7 +57,13 @@ const EN_UZUN_ARALIK_MS: u32 = 700;
 const SESSIZLIK_MS: u32 = 400;
 /// Ritim payı: ikinci alkıştan sonraki sessizlik en az "aralık + bu kadar".
 const RITIM_PAYI_MS: u32 = 100;
-const ON_SESSIZLIK_MS: u32 = 150;
+const ON_SESSIZLIK_MS: u32 = 400;
+/// İkinci alkıştan sonra yankı kuyruğuna tanınan süre (RT60 ≈ 0,5 sn'lik odada kuyruk ~150 ms'de
+/// mutlak eşiğin altına iner).
+const YANKI_TOLERANSI_MS: u32 = 150;
+/// Mutlak sessizlik: parça tepesi `min(taban × SESSIZ_KATI, A × SESSIZ_A_ORANI)`'nın altında.
+const SESSIZ_KATI: f32 = 4.0;
+const SESSIZ_A_ORANI: f32 = 0.25;
 /// İki alkışın tepeleri en çok bu kadar kat farklı olabilir.
 const TEPE_BENZERLIGI: f32 = 4.0;
 /// Ortam tabanının alt sınırı (i16 ölçeğinde RMS): tam sessiz akışta eşik sıfıra inmesin.
@@ -62,9 +71,13 @@ const TABAN_EN_AZ: f32 = 20.0;
 /// K: tepe / taban oranı. Hassasiyet 0 → 30 (29,5 dB), 1 → 6 (15,6 dB); arası geometrik.
 const K_SERT: f32 = 30.0;
 const K_YUMUSAK: f32 = 6.0;
-/// A: mutlak en düşük tepe (alt blok RMS'i). Hassasiyet 0 → 3000 (−20,8 dBFS), 1 → 600 (−34,7 dBFS).
-const A_SERT: f32 = 3000.0;
-const A_YUMUSAK: f32 = 600.0;
+/// A: mutlak en düşük tepe (alt blok RMS'i). Hassasiyet 0 → 4000 (−18,3 dBFS), 1 → 800 (−32,2 dBFS);
+/// varsayılan 0,6 → ≈1520 (−26,7 dBFS). İlk ayardan (3000/600, 0,6'da ≈1140) bir miktar yükseltildi:
+/// 1-2 m'deki alkış dizüstü mikrofonunda tahminen −20..−10 dBFS alt blok RMS'i verir, yakın klavye
+/// ve kalem vuruşları ise çoğunlukla bunun altında kalır; A/4 aynı zamanda mutlak sessizlik eşiğidir
+/// (≈ −39 dBFS), müzik/oda gürültüsü bunun üstündeyken çift alkış tamamlanamaz.
+const A_SERT: f32 = 4000.0;
+const A_YUMUSAK: f32 = 800.0;
 
 /// Sürmekte olan bir enerji olayı (alkış adayı).
 #[derive(Debug, Clone, Copy)]
@@ -220,6 +233,12 @@ impl AlkisAlgilayici {
                 false
             }
             Sira::Iki { gereken_ms, sessiz_ms } => {
+                // Yankı toleransı bitince mutlak sessizlik.
+                let sessiz = if sessiz_ms < YANKI_TOLERANSI_MS {
+                    sessiz
+                } else {
+                    tepe < (self.taban * SESSIZ_KATI).min(self.a * SESSIZ_A_ORANI)
+                };
                 if !sessiz {
                     self.sira = Sira::Bos;
                     return false;
@@ -536,6 +555,85 @@ mod testler {
             }
         }
         assert_eq!(calistir(&s, 0.6).len(), 1);
+    }
+
+    /// Klavye/kalem vuruşu: çok kısa (0,3 ms yükseliş, 1,5 ms sönüm), tiz tık.
+    fn vurus_ekle(s: &mut [f32], an_ms: usize, tepe: f32, tohum: u32) {
+        let mut g = Gurultu(tohum);
+        let bas = an_ms * ORNEK_MS;
+        for i in 0..(15 * ORNEK_MS) {
+            let Some(o) = s.get_mut(bas + i) else { break };
+            let t_ms = i as f32 / ORNEK_MS as f32;
+            let zarf = if t_ms < 0.3 { t_ms / 0.3 } else { (-(t_ms - 0.3) / 1.5).exp() };
+            *o += g.sonraki() * tepe * zarf;
+        }
+    }
+
+    #[test]
+    fn ritmik_muzik_snare_cifti_tetiklemez() {
+        // Hafif bir müzik yatağı (akor, sürekli) üstünde her ölçüde iki snare (250 ms arayla) ve
+        // ardından 750 ms boşluk. Snare'ler tek tek alkış ölçütlerini geçer; ama yatak mutlak
+        // sessizlik eşiğinin üstünde olduğu için dizi tamamlanmaz.
+        let mut s = arka_plan(8000, 40.0, 11);
+        let hz = ORNEK_HIZI as f32;
+        for (i, o) in s.iter_mut().enumerate() {
+            let t = i as f32 / hz;
+            let mut x = 0f32;
+            for f in [196.0f32, 247.0, 294.0] {
+                x += (t * f * 2.0 * std::f32::consts::PI).sin();
+            }
+            *o += x * 400.0;
+        }
+        let mut an = 1000;
+        let mut tohum = 200;
+        while an + 300 < 7500 {
+            alkis_ekle(&mut s, an, 14_000.0, tohum);
+            alkis_ekle(&mut s, an + 250, 14_000.0, tohum + 1);
+            tohum += 2;
+            an += 1000;
+        }
+        assert!(calistir(&s, 0.6).is_empty());
+        assert!(calistir(&s, 1.0).is_empty());
+        // Aynı snare çifti sessiz odada gerçek bir çift alkış gibi tetikler (ölçütleri geçtiğinin kanıtı).
+        let mut sessiz_oda = arka_plan(4000, 40.0, 11);
+        alkis_ekle(&mut sessiz_oda, 1000, 14_000.0, 200);
+        alkis_ekle(&mut sessiz_oda, 1250, 14_000.0, 201);
+        assert_eq!(calistir(&sessiz_oda, 0.6).len(), 1);
+    }
+
+    #[test]
+    fn yakin_klavye_ve_kalem_vurusu_tetiklemez() {
+        // 3 sn boyunca 150-350 ms arayla düzensiz yazma, sonra sessizlik; hem orta hem yüksek
+        // şiddette (yakın mikrofon).
+        for tepe in [4_000.0f32, 16_000.0] {
+            let mut s = arka_plan(6000, 40.0, 21);
+            let mut g = Gurultu(5);
+            let mut an = 1000usize;
+            let mut i = 0;
+            while an < 4000 {
+                vurus_ekle(&mut s, an, tepe, 300 + i);
+                an += 150 + ((g.sonraki() + 1.0) * 100.0) as usize;
+                i += 1;
+            }
+            assert!(calistir(&s, 0.6).is_empty(), "yazma, tepe {tepe}");
+        }
+        // Tek tük iki kalem vuruşu (orta şiddet): mutlak eşiğin altında.
+        let mut s = arka_plan(4000, 40.0, 22);
+        vurus_ekle(&mut s, 1000, 4_000.0, 1);
+        vurus_ekle(&mut s, 1300, 4_000.0, 2);
+        assert!(calistir(&s, 0.6).is_empty());
+    }
+
+    #[test]
+    fn ikinci_alkistan_sonra_sessizlik_bozulursa_tetiklemez() {
+        // Yankı toleransından sonra hafif ama sürekli bir ses (ör. biri konuşmaya başladı, VAD henüz
+        // bölüt açmadı): mutlak sessizlik sağlanmaz.
+        let mut s = alkisli(&[0, 300], GUCLU);
+        let mut g = Gurultu(77);
+        for x in &mut s[(1000 + 300 + 200) * ORNEK_MS..(1000 + 300 + 800) * ORNEK_MS] {
+            *x += g.sonraki() * 900.0;
+        }
+        assert!(calistir(&s, 0.6).is_empty());
     }
 
     #[test]

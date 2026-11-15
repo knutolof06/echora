@@ -389,8 +389,8 @@ impl Uygulama {
             self.bildir("Denenemez: bu satır kayıtlı ayarlarda geçersiz.", IletiTuru::Hata);
             return;
         };
-        if k.riskli {
-            self.pencere = Some(Pencere::DeneOnay { soru: duzen::onay_sorusu(&k), ifade: k.ifade });
+        if let Some(soru) = duzen::dene_sorusu(&k) {
+            self.pencere = Some(Pencere::DeneOnay { soru, ifade: k.ifade });
         } else {
             self.dene_gonder(&k.ifade, &duzen::eylem_tarifi(&k.eylem));
         }
@@ -407,8 +407,8 @@ impl Uygulama {
             self.bildir("Denenemez: bu ifade kayıtlı ayarlarda yok.", IletiTuru::Hata);
             return;
         };
-        if k.riskli {
-            self.pencere = Some(Pencere::DeneOnay { soru: duzen::onay_sorusu(&k), ifade: k.ifade });
+        if let Some(soru) = duzen::dene_sorusu(&k) {
+            self.pencere = Some(Pencere::DeneOnay { soru, ifade: k.ifade });
         } else {
             self.dene_gonder(&k.ifade, &duzen::eylem_tarifi(&k.eylem));
         }
@@ -720,7 +720,7 @@ impl Uygulama {
                 let mut calistir = false;
                 let yanit = egui::Modal::new(egui::Id::unique("studyo_dene_onay")).show(ctx, |ui| {
                     ui.set_max_width(420.0);
-                    ui.label(self.baslik_metni("Riskli komut", 17.0));
+                    ui.label(self.baslik_metni("Komutu dene", 17.0));
                     ui.add_space(6.0);
                     ui.label(&soru);
                     ortak::ipucu(ui, format!("Gönderilecek ifade: \"{ifade}\""));

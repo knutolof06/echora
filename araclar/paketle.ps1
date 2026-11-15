@@ -65,8 +65,11 @@ $klasor = Join-Path $Cikti $ad
 $zip = Join-Path $Cikti "$ad.zip"
 $ozetler = Join-Path $Cikti 'SHA256SUMS.txt'
 New-Item -ItemType Directory -Force -Path $Cikti | Out-Null
-if (Test-Path $klasor) { Remove-Item $klasor -Recurse -Force }
-foreach ($f in $zip, $ozetler) { if (Test-Path $f) { Remove-Item $f -Force } }
+# Önceki koşulardan kalanlar (eski sürümler dahil) temizlenir; yalnız $Cikti altında ve yalnız bilinen adlar.
+Get-ChildItem -LiteralPath $Cikti -Directory -Filter 'Echora-*-win64' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+Get-ChildItem -LiteralPath $Cikti -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like 'Echora-*.zip' -or $_.Name -like 'Echora-Kurulum-*.exe' -or $_.Name -eq 'SHA256SUMS.txt' -or $_.Name -eq 'dogrula.tmp' } |
+    Remove-Item -Force
 
 New-Item -ItemType Directory -Force -Path $klasor | Out-Null
 Copy-Item $exe -Destination $klasor

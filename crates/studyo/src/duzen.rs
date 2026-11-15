@@ -757,6 +757,33 @@ pub fn kisayol_uyarilari(ham: &HamAyarlar, ifadeler: &std::collections::HashSet<
     u
 }
 
+/// Türkçe klavyede Ctrl+Alt = AltGr: Ctrl+Alt + harf/rakam kısayolu @ € ₺ { [ gibi karakterlerin
+/// yazılmasını engelleyebilir. Geçersiz yazımda `None` (o hata ayrıca gösterilir).
+pub fn altgr_uyarisi(tuslar: &str) -> Option<&'static str> {
+    let k = komut::kisayol_coz(tuslar).ok()?;
+    let ctrl_alt = komut::MOD_CONTROL | komut::MOD_ALT;
+    let yazilabilir = matches!(k.vk, 0x30..=0x39 | 0x41..=0x5A);
+    (k.degistirici & ctrl_alt == ctrl_alt && k.degistirici & komut::MOD_WIN == 0 && yazilabilir).then_some(
+        "Türkçe klavyede Ctrl+Alt, AltGr ile aynıdır; bu kısayol @ € ₺ { [ gibi karakterlerin yazılmasını engelleyebilir. Win ya da Shift ile (ör. Win+Alt+1) veya bir F tuşuyla deneyin.",
+    )
+}
+
+/// Toplu atamada özel (komuta yazılmış) efekti değişecek satır sayısı.
+pub fn ozel_efekt_degisecek(ham: &HamAyarlar, satirlar: &[usize], efekt: Option<Efekt>) -> usize {
+    satirlar.iter().filter_map(|&i| ham.komut.get(i)).filter(|k| k.efekt.is_some() && k.efekt != efekt).count()
+}
+
+/// "Dene" öncesi sorulacak soru: zamanlı komutta gerçek zamanlayıcı uyarısı, riskli komutta onay;
+/// ikisi de değilse `None` (doğrudan gönderilir).
+pub fn dene_sorusu(k: &Komut) -> Option<String> {
+    if let komut::Eylem::Zamanla { dakika, gosterim, .. } = &k.eylem {
+        return Some(format!(
+            "Gerçek bir zamanlayıcı kurulur: {dakika} dk sonra \"{gosterim}\" çalışır. 'zamanlayıcı iptal' diyerek ya da tepsi menüsünden iptal edilir. Gönderilsin mi?"
+        ));
+    }
+    k.riskli.then(|| onay_sorusu(k))
+}
+
 /// Yeni kısayol satırı ekler; sırasını döner.
 pub fn kisayol_ekle(ham: &mut HamAyarlar, tuslar: &str, ifade: &str) -> usize {
     ham.kisayol.push(komut::HamKisayol { tuslar: tuslar.to_string(), ifade: ifade.to_string() });
@@ -1227,5 +1254,46 @@ mod testler {
         for m in ["kisayol #2: tuslar: x", "kısayol çakışması \"ctrl+alt+1\": a ile b", "dinleme_tusu: x", "palet_tusu: x", "alkis.ifade \"x\"", "dinleme_kipi \"tusla\" iken"] {
             assert_eq!(hata_yeri(m), HataYeri::Kisayol, "{m}");
         }
+    }
+
+    #[test]
+    fn altgr_uyarisi_yalniz_ctrl_alt_yazilabilir() {
+        assert!(altgr_uyarisi("ctrl+alt+1").is_some());
+        assert!(altgr_uyarisi("Alt+Ctrl+Q").is_some());
+        assert!(altgr_uyarisi("ctrl+alt+shift+q").is_some());
+        assert!(altgr_uyarisi("ctrl+alt+f5").is_none());
+        assert!(altgr_uyarisi("ctrl+alt+space").is_none());
+        assert!(altgr_uyarisi("win+alt+1").is_none());
+        assert!(altgr_uyarisi("ctrl+win+alt+1").is_none());
+        assert!(altgr_uyarisi("ctrl+shift+1").is_none());
+        assert!(altgr_uyarisi("gecersiz").is_none());
+    }
+
+    #[test]
+    fn toplu_atamada_degisecek_ozel_sayisi() {
+        let mut ham = HamAyarlar::default();
+        for e in [None, Some(Efekt::Portal), Some(Efekt::Aurora)] {
+            ham.komut.push(HamKomut { efekt: e, ..komut("masaüstünü göster", "masaustunu_goster") });
+        }
+        assert_eq!(ozel_efekt_degisecek(&ham, &[0, 1, 2], None), 2);
+        assert_eq!(ozel_efekt_degisecek(&ham, &[0, 1, 2], Some(Efekt::Aurora)), 1);
+        assert_eq!(ozel_efekt_degisecek(&ham, &[0], Some(Efekt::Aurora)), 0);
+        assert_eq!(ozel_efekt_degisecek(&ham, &[7], None), 0);
+    }
+
+    #[test]
+    fn zamanli_dene_once_uyarir() {
+        let ham = varsayilan_ham();
+        let a = Ayarlar::hamdan(&ham).unwrap();
+        let bul = |ifade: &str| a.komutlar.iter().find(|k| k.ifade == ifade).cloned().unwrap();
+        let s = dene_sorusu(&bul("beş dakika sonra bilgisayarı uyut")).unwrap();
+        assert!(s.contains("5 dk sonra") && s.contains("zamanlayıcı iptal"), "{s}");
+        // Zararsız zamanlı komut da uyarılır.
+        let z = a.komutlar.iter().find(|k| matches!(k.eylem, komut::Eylem::Zamanla { .. }) && !k.riskli);
+        if let Some(z) = z {
+            assert!(dene_sorusu(z).is_some());
+        }
+        assert!(dene_sorusu(&bul("bilgisayarı uyut")).unwrap().contains("Çalıştırılsın mı"));
+        assert_eq!(dene_sorusu(&bul("sesi aç")), None);
     }
 }

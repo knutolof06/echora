@@ -33,6 +33,8 @@ kurulum dosyası ilk çalıştırıldığında "Windows bilgisayarınızı korud
 uygulamalarda olağandır: **Ek bilgi → Yine de çalıştır** ile geçilir. İndirdiğiniz dosyanın özetini
 aynı sürümdeki `SHA256SUMS.txt` ile karşılaştırabilirsiniz (PowerShell:
 `Get-FileHash .\Echora-Kurulum-X.Y.Z.exe`; zip için `Get-FileHash .\Echora-X.Y.Z-win64.zip`).
+Kurulum dosyasını boş bir klasörden ya da İndirilenler'den çalıştırın; imzasız uygulamalarda olduğu gibi,
+aynı klasöre başka bir programın bıraktığı DLL dosyaları kurulum sırasında yüklenebilir.
 
 Eski bir "Yankı" kurulumu varsa sihirbaz onu (çalışmıyorsa) kaldırır; ayarlarınız korunur ve ilk
 açılışta yeni klasöre taşınır.
@@ -135,18 +137,24 @@ kullanın.
 
 ### Klavye kısayolları
 Bir komuta sesle değil tuşla da ulaşabilirsiniz: **Stüdyo > Kısayollar**'da "tuşa basarak ata"
-kutusuna tıklayıp kombinasyona basın (ör. `Ctrl+Alt+1`) ve çalışacak komutu seçin. Kısayollar
+kutusuna tıklayıp kombinasyona basın (ör. `Ctrl+Shift+F5` ya da `Win+Alt+1`; Win tuşlu kısayolları
+"elle yaz" kutusuna yazın) ve çalışacak komutu seçin. Kısayollar
 her yerde çalışır, tetik kelimesi gerektirmez (tuşa basmak niyeti zaten gösterir; riskli komutlar da
 onaysız çalışır) ve dinleme duraklatılmış olsa bile işler. Tek başına harf tuşu atanamaz (yazmayı
 bozar): en az bir `Ctrl`/`Alt`/`Shift`/`Win` gerekir (F13-F24 hariç). Kısayol başka bir uygulamada
 kullanılıyorsa Echora bir balonla bildirir.
+
+**Türkçe klavyede dikkat:** `Ctrl+Alt`, `AltGr` ile aynıdır. `Ctrl+Alt+Q`, `Ctrl+Alt+E`,
+`Ctrl+Alt+1` gibi bir kısayol tüm uygulamalarda `@`, `€`, `>` gibi karakterlerin yazılmasını engeller;
+Stüdyo bu durumda uyarır. `Win`, `Shift` ya da F tuşlarıyla kurulan kısayolları tercih edin.
 
 ### Bas-konuş dinleme kipi
 Stüdyo > Kısayollar'da dinleme kipini **"Tuşla"** yaparsanız mikrofon yalnız dinleme tuşuna
 (varsayılan `Win+Alt+Boşluk`) bastığınızda, ayarlanan süre (varsayılan 6 sn) boyunca komut dinler;
 bu pencerede söylediğiniz komut tetik kelimesi olmadan çalışır. Bu kipte tanıma modeli de boşta hiç
 yüklenmez. **"Sürekli"** kipte (varsayılan) dinleme tuşu isteğe bağlıdır: basınca açılan pencerede
-riskli komutlar tetiksiz çalışır.
+riskli komutlar tetiksiz çalışır. Dinleme tuşu başka bir uygulamada kayıtlıysa Echora "Tuşla" kipinde
+sağır kalmamak için geçici olarak sürekli dinlemeye geçer ve bunu bir kez bildirir.
 
 ### Zamanlı komutlar
 Bazı komutlara süre ekleyebilirsiniz: **"atlas yarım saat sonra bilgisayarı uyut"**, "on dakika
@@ -159,15 +167,17 @@ müziği durdur ve sessize al zamanlanabilir; başka komutlar için ayar dosyas�
 `zamanlanabilir = true` ekleyin.
 
 ### Komut paleti
-`Ctrl+Alt+P` (Stüdyo > Kısayollar'dan değiştirilebilir) küçük bir arama penceresi açar: komutun
+`Ctrl+Alt+Shift+P` (Stüdyo > Kısayollar'dan değiştirilebilir) küçük bir arama penceresi açar: komutun
 bir kısmını yazın, ok tuşlarıyla seçip **Enter** ile çalıştırın (Esc ya da başka pencereye geçmek
-kapatır). Paletten çalıştırılan riskli komutlar da tetiksiz çalışır; yazıp Enter'a basmak niyeti gösterir.
+kapatır). Riskli komutlar paletten iki adımda çalışır: ilk Enter satırı onaya alır, ikinci Enter çalıştırır.
 
 ### Çift alkış (varsayılan kapalı)
 Stüdyo > Kısayollar > **Çift alkış** kartından açıp bir komut seçerseniz, iki kez el çırpınca o komut
 çalışır (ör. "ekranları kapat"). Hassasiyet ayarlanabilir; "Mikrofonla dene" ile canlı algılamayı
 görebilirsiniz. Üç alkış, konuşma ve müzik tetiklemez; art arda tetiklenmeyi önlemek için iki saniye
-beklenir. Açık olduğunda mikrofon sesi ek olarak alkış için çok hafif bir hesaptan geçer.
+beklenir. Açık olduğunda mikrofon sesi ek olarak alkış için çok hafif bir hesaptan geçer. Çift alkış "Tuşla"
+dinleme kipinde de çalışır: ayrı ve açıkça açılan bir tetiktir. Yanlış algılama olasılığına karşı
+alkışa riskli bir komut (ekran kapatma gibi) bağlamadan önce "Mikrofonla dene" ile odanızda sınayın.
 
 ### Kolay efekt seçimi
 **Stüdyo > Efektler > Komut efektleri** sekmesinde her komutun yanında efekt açılır listesi ve

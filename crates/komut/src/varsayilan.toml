@@ -159,7 +159,7 @@ guncelleme_otomatik = true
 dinleme_kipi = "surekli"
 dinleme_tusu = "win+alt+space"
 dinleme_suresi_sn = 6
-palet_tusu = "ctrl+alt+p"
+palet_tusu = "ctrl+alt+shift+p"
 
 # Tüm efektler için tek ayar. Bir efekti ayrıca değiştirmek isterseniz [efektler.<ad>] tablosuna
 # yalnız farklı olmasını istediğiniz alanları yazın (örnek: [efektler.aurora] renk1 = "#69F0AE").

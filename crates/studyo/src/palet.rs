@@ -25,6 +25,8 @@ pub struct PaletSecenekleri {
 const BASLIK: &str = "Echora Komut Paleti";
 const GENISLIK: f32 = 600.0;
 const YUKSEKLIK: f32 = 380.0;
+/// Odak bu sürede gelmezse palet kapanır.
+const ODAK_BEKLEME: Duration = Duration::from_secs(3);
 /// Listede en çok gösterilen sonuç (ilk kareler ucuz kalsın).
 const EN_COK_SONUC: usize = 60;
 
@@ -73,6 +75,12 @@ struct Palet {
     logo: Option<egui::TextureHandle>,
     hata: Option<String>,
     odaklandi: bool,
+    /// Pencerenin açıldığı an (odak hiç gelmezse kapanmak için).
+    acilis: Instant,
+    /// Bu karede Enter'a basıldı ya da önceki karede ertelendi (liste henüz güncel sorgunun değil).
+    bekleyen_enter: bool,
+    /// Onay bekleyen riskli satır (`satirlar` sırası): ikinci Enter/tık çalıştırır.
+    onay: Option<usize>,
     kare: u64,
     ornek: Option<Ornek>,
     kalin: bool,
@@ -134,6 +142,9 @@ fn calistir_ic(s: PaletSecenekleri, ornek: Option<Ornek>, sorgu: Option<String>)
                 logo: None,
                 hata: None,
                 odaklandi: false,
+                acilis: Instant::now(),
+                bekleyen_enter: false,
+                onay: None,
                 kare: 0,
                 ornek,
                 kalin,
@@ -259,16 +270,32 @@ impl Palet {
         self.sonuc = s;
         self.secili = 0;
         self.kaydir = true;
+        self.onay = None;
         self.aranan = Some(self.sorgu.clone());
     }
 
-    fn calistir(&mut self, ctx: &egui::Context) {
-        let Some(h) = &self.hazir else { return };
-        let Some(&i) = self.sonuc.get(self.secili) else { return };
-        let ifade = h.satirlar[i].ifade.clone();
-        match ipc::komutu_calistir(&ifade) {
-            Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
-            Err(e) => self.hata = Some(format!("Çalıştırılamadı: {e}.")),
+    /// Enter ya da tık: kararı `secim_karari` verir. `tik`: satıra tıklandı (boş sorguda da geçerli).
+    fn sec(&mut self, ctx: &egui::Context, tik: bool) {
+        let Some(h) = &self.hazir else {
+            // Liste hazır değil: Enter bekler.
+            self.bekleyen_enter = !tik;
+            return;
+        };
+        let secili = self.sonuc.get(self.secili).map(|&i| (i, h.satirlar[i].riskli));
+        let karar = secim_karari(&self.sorgu, self.aranan.as_deref(), secili, self.onay, tik);
+        self.bekleyen_enter = karar == Karar::Ertele;
+        match karar {
+            Karar::Yok | Karar::Ertele => {}
+            Karar::OnayIste => self.onay = secili.map(|(i, _)| i),
+            Karar::Calistir => {
+                let Some((i, _)) = secili else { return };
+                let ifade = h.satirlar[i].ifade.clone();
+                self.onay = None;
+                match ipc::komutu_calistir(&ifade) {
+                    Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
+                    Err(e) => self.hata = Some(format!("Çalıştırılamadı: {e}.")),
+                }
+            }
         }
     }
 
@@ -293,8 +320,9 @@ impl Palet {
                 self.secili = (self.secili + 1) % n;
             }
         }
+        // Enter metin düzenlemesinden ve liste tazelenmesinden SONRA işlenir (`ui`).
         if enter {
-            self.calistir(ctx);
+            self.bekleyen_enter = true;
         }
     }
 
@@ -314,8 +342,16 @@ impl Palet {
             None => {
                 if odakta == Some(true) {
                     self.odaklandi = true;
-                } else if odakta == Some(false) && self.odaklandi {
+                } else if self.odaklandi && odakta == Some(false) {
                     ctx.send_viewport_cmd(ViewportCommand::Close);
+                } else if !self.odaklandi {
+                    // Windows ön plana geçişi reddettiyse palet arkada asılı kalmasın.
+                    let kalan = ODAK_BEKLEME.saturating_sub(self.acilis.elapsed());
+                    if kalan.is_zero() {
+                        ctx.send_viewport_cmd(ViewportCommand::Close);
+                    } else {
+                        ctx.request_repaint_after(kalan);
+                    }
                 }
             }
         }
@@ -396,7 +432,13 @@ impl Palet {
             for (sira, &i) in self.sonuc.iter().enumerate() {
                 let s = &h.satirlar[i];
                 let (rect, yanit) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
-                if sira == secili {
+                let onayda = self.onay == Some(i) && sira == secili;
+                if onayda {
+                    ui.painter().rect(rect, CornerRadius::same(8), UYARI.gamma_multiply(0.16), Stroke::new(1.5, UYARI), egui::StrokeKind::Inside);
+                    if self.kaydir {
+                        ui.scroll_to_rect(rect, None);
+                    }
+                } else if sira == secili {
                     ui.painter().rect_filled(rect, CornerRadius::same(8), SECILI);
                     ui.painter().rect_filled(
                         egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 10.0), egui::vec2(3.0, rect.height() - 20.0)),
@@ -413,7 +455,11 @@ impl Palet {
                 let sol = rect.left() + 14.0;
                 let gosterim_yazi = if self.kalin { egui::FontFamily::Name("kalin".into()) } else { egui::FontFamily::Proportional };
                 p.text(egui::pos2(sol, rect.top() + 6.0), egui::Align2::LEFT_TOP, &s.gosterim, egui::FontId::new(15.0, gosterim_yazi), YAZI);
-                p.text(egui::pos2(sol, rect.bottom() - 6.0), egui::Align2::LEFT_BOTTOM, format!("\u{201C}{}\u{201D}", s.ifade), egui::FontId::proportional(12.0), SOLUK);
+                if onayda {
+                    p.text(egui::pos2(sol, rect.bottom() - 6.0), egui::Align2::LEFT_BOTTOM, "Riskli komut: çalıştırmak için Enter'a yeniden basın (ya da yeniden tıklayın)", egui::FontId::proportional(12.0), UYARI);
+                } else {
+                    p.text(egui::pos2(sol, rect.bottom() - 6.0), egui::Align2::LEFT_BOTTOM, format!("\u{201C}{}\u{201D}", s.ifade), egui::FontId::proportional(12.0), SOLUK);
+                }
                 // Sağda rozetler.
                 let mut x = rect.right() - 10.0;
                 let mut rozet = |metin: &str, renk: Color32| {
@@ -437,9 +483,12 @@ impl Palet {
         });
         self.kaydir = false;
         if let Some(s) = tikla {
+            if self.secili != s {
+                self.onay = None;
+            }
             self.secili = s;
             let ctx = ui.ctx().clone();
-            self.calistir(&ctx);
+            self.sec(&ctx, true);
         }
     }
 }
@@ -464,6 +513,7 @@ impl eframe::App for Palet {
         self.tuslar(&ctx);
         if self.secili != onceki_secili {
             self.kaydir = true;
+            self.onay = None;
         }
 
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
@@ -483,6 +533,12 @@ impl eframe::App for Palet {
                     ui.allocate_ui(egui::vec2(ui.available_width(), liste_y), |ui| {
                         ui.set_min_height(liste_y);
                         self.sonuclari_tazele();
+                        if self.bekleyen_enter {
+                            self.sec(&ctx, false);
+                            if self.bekleyen_enter {
+                                ctx.request_repaint();
+                            }
+                        }
                         self.liste(ui);
                     });
                     ui.horizontal(|ui| {
@@ -498,6 +554,32 @@ impl eframe::App for Palet {
                     });
                 });
         });
+    }
+}
+
+/// Enter/tık kararı (saf).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Karar {
+    Yok,
+    /// Liste henüz bu karedeki sorgunun değil: bir kare sonra yeniden bak.
+    Ertele,
+    /// Riskli satır: önce onay durumuna al.
+    OnayIste,
+    Calistir,
+}
+
+/// `secili`: (satır sırası, riskli mi); `onay`: onay bekleyen satır; `tik`: fareyle seçildi.
+fn secim_karari(sorgu: &str, aranan: Option<&str>, secili: Option<(usize, bool)>, onay: Option<usize>, tik: bool) -> Karar {
+    if !tik && sorgu.trim().is_empty() {
+        return Karar::Yok;
+    }
+    if aranan != Some(sorgu) {
+        return Karar::Ertele;
+    }
+    match secili {
+        None => Karar::Yok,
+        Some((i, true)) if onay != Some(i) => Karar::OnayIste,
+        Some(_) => Karar::Calistir,
     }
 }
 
@@ -563,4 +645,36 @@ fn surec_yasi_ms() -> u64 {
     let simdi = unsafe { GetSystemTimePreciseAsFileTime() };
     let sayi = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
     sayi(simdi).saturating_sub(sayi(olusma)) / 10_000
+}
+
+#[cfg(test)]
+mod testler {
+    use super::*;
+
+    #[test]
+    fn bos_sorguda_enter_calistirmaz() {
+        assert_eq!(secim_karari("", Some(""), Some((0, true)), None, false), Karar::Yok);
+        assert_eq!(secim_karari("  ", Some("  "), Some((0, false)), None, false), Karar::Yok);
+        // Fareyle tıklama boş sorguda da seçer.
+        assert_eq!(secim_karari("", Some(""), Some((3, false)), None, true), Karar::Calistir);
+    }
+
+    #[test]
+    fn eski_liste_icin_enter_ertelenir() {
+        // "uyu" listesi duruyorken "uyut" yazılıp aynı karede Enter: liste tazelenene dek beklenir.
+        assert_eq!(secim_karari("uyut", Some("uyu"), Some((0, false)), None, false), Karar::Ertele);
+        assert_eq!(secim_karari("uyut", None, None, None, false), Karar::Ertele);
+        assert_eq!(secim_karari("uyut", Some("uyut"), Some((4, false)), None, false), Karar::Calistir);
+        assert_eq!(secim_karari("zzz", Some("zzz"), None, None, false), Karar::Yok);
+    }
+
+    #[test]
+    fn riskli_iki_adimda_calisir() {
+        assert_eq!(secim_karari("uyut", Some("uyut"), Some((4, true)), None, false), Karar::OnayIste);
+        assert_eq!(secim_karari("uyut", Some("uyut"), Some((4, true)), Some(4), false), Karar::Calistir);
+        // Başka satır onaydaysa yeniden onay istenir.
+        assert_eq!(secim_karari("uyut", Some("uyut"), Some((5, true)), Some(4), false), Karar::OnayIste);
+        assert_eq!(secim_karari("uyut", Some("uyut"), Some((5, true)), None, true), Karar::OnayIste);
+        assert_eq!(secim_karari("uyut", Some("uyut"), Some((5, true)), Some(5), true), Karar::Calistir);
+    }
 }

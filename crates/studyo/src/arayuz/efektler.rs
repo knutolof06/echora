@@ -68,6 +68,9 @@ pub struct EfektlerDurumu {
     secili_satirlar: BTreeSet<usize>,
     /// Toplu atamada seçilen efekt (`None` = eyleme göre).
     toplu_efekt: Option<Efekt>,
+    /// "Tümüne ata" / "Tümü eyleme göre" özel efektleri değiştirecekse onay bekler:
+    /// (satırlar, efekt, değişecek özel efekt sayısı).
+    toplu_onay: Option<(Vec<usize>, Option<Efekt>, usize)>,
     /// Sonraki karede bu komut satırına kaydır.
     kaydir: Option<usize>,
     onizleme_metni: String,
@@ -88,6 +91,7 @@ impl Default for EfektlerDurumu {
             secim: Secim::Komut(0),
             secili_satirlar: BTreeSet::new(),
             toplu_efekt: Some(Efekt::Aurora),
+            toplu_onay: None,
             kaydir: None,
             onizleme_metni: "Chrome aç".into(),
             dongu: false,
@@ -393,8 +397,9 @@ impl Uygulama {
         let adet = self.ham.komut.len();
         self.efektler.secili_satirlar.retain(|i| *i < adet);
         let secili = self.efektler.secili_satirlar.len();
-        let mut uygula: Option<Vec<usize>> = None;
-        let mut hepsi_varsayilan = false;
+        // (satırlar, efekt, onay gerekebilir mi)
+        let mut is: Option<(Vec<usize>, Option<Efekt>, bool)> = None;
+        let mut onaylandi = false;
         ortak::kart(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 let mut hepsi = adet > 0 && secili == adet;
@@ -406,10 +411,10 @@ impl Uygulama {
                 ortak::komut_efekt_secici(ui, "toplu_efekt", &mut toplu, None, 150.0);
                 self.efektler.toplu_efekt = toplu;
                 if ui.add_enabled(secili > 0, egui::Button::new(format!("Seçililere ata ({secili})"))).clicked() {
-                    uygula = Some(self.efektler.secili_satirlar.iter().copied().collect());
+                    is = Some((self.efektler.secili_satirlar.iter().copied().collect(), toplu, false));
                 }
                 if ui.add_enabled(adet > 0, egui::Button::new("Tümüne ata")).clicked() {
-                    uygula = Some((0..adet).collect());
+                    is = Some(((0..adet).collect(), toplu, true));
                 }
                 ui.add_space(8.0);
                 if ui
@@ -417,20 +422,43 @@ impl Uygulama {
                     .on_hover_text("Komutlara özel efektleri kaldırır; her komut eyleminin varsayılan efektini kullanır")
                     .clicked()
                 {
-                    hepsi_varsayilan = true;
+                    is = Some(((0..adet).collect(), None, true));
                 }
             });
+            if let Some((efekt, n)) = self.efektler.toplu_onay.as_ref().map(|(_, e, n)| (*e, *n)) {
+                let hedef = efekt.map_or("eyleme göre", |e| e.ad());
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!("{n} komutun özel efekti değişecek (\"{hedef}\" olacak).")).color(ortak::uyari_rengi(ui)));
+                    if ui.button(RichText::new("Evet, uygula").color(ortak::uyari_rengi(ui))).clicked() {
+                        onaylandi = true;
+                    }
+                    if ui.button("Vazgeç").clicked() {
+                        self.efektler.toplu_onay = None;
+                    }
+                });
+            }
         });
-        if let Some(satirlar) = uygula {
-            let efekt = self.efektler.toplu_efekt;
-            let n = duzen::efekt_ata(&mut self.ham, satirlar, efekt);
-            let ad = efekt.map_or("eyleme göre", |e| e.ad());
-            self.bildir(format!("{n} komutun efekti \"{ad}\" yapıldı; dosyaya yazmak için Kaydet'e basın."), IletiTuru::Bilgi);
+        if onaylandi {
+            if let Some((satirlar, efekt, _)) = self.efektler.toplu_onay.take() {
+                self.toplu_uygula(satirlar, efekt);
+            }
         }
-        if hepsi_varsayilan {
-            let n = duzen::efekt_ata(&mut self.ham, 0..adet, None);
-            self.bildir(format!("{n} komut eyleme göre efekte döndü; dosyaya yazmak için Kaydet'e basın."), IletiTuru::Bilgi);
+        if let Some((satirlar, efekt, onay_gerekebilir)) = is {
+            let n = duzen::ozel_efekt_degisecek(&self.ham, &satirlar, efekt);
+            if onay_gerekebilir && n > 0 {
+                self.efektler.toplu_onay = Some((satirlar, efekt, n));
+            } else {
+                self.efektler.toplu_onay = None;
+                self.toplu_uygula(satirlar, efekt);
+            }
         }
+    }
+
+    fn toplu_uygula(&mut self, satirlar: Vec<usize>, efekt: Option<Efekt>) {
+        let n = duzen::efekt_ata(&mut self.ham, satirlar, efekt);
+        let ad = efekt.map_or("eyleme göre", |e| e.ad());
+        self.bildir(format!("{n} komutun efekti \"{ad}\" yapıldı; dosyaya yazmak için Kaydet'e basın."), IletiTuru::Bilgi);
     }
 
     fn komut_efekt_listesi(&mut self, ui: &mut Ui) {

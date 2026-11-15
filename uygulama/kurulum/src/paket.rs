@@ -83,7 +83,7 @@ fn zip_isle(bayt: &[u8], hedef: Option<&Path>) -> Result<Vec<PathBuf>, String> {
         return Err(format!("zip'te çok fazla girdi ({})", a.len()));
     }
     if let Some(h) = hedef {
-        let _ = std::fs::remove_dir_all(h);
+        // Var olan klasör SİLİNMEZ (hedefi çağıran dışlamalı olarak yeni oluşturur).
         std::fs::create_dir_all(h).map_err(|x| format!("{} oluşturulamadı: {x}", h.display()))?;
     }
     let mut gorulen = HashSet::new();
@@ -166,7 +166,7 @@ pub fn zip_denetle(bayt: &[u8]) -> Result<usize, String> {
     Ok(g.len())
 }
 
-/// Zip'i `hedef`e açar (önce boşaltılır). Dönen: `echora.exe`nin tam yolu.
+/// Zip'i `hedef`e açar (hedef boş/yeni olmalı; var olan hiçbir şey silinmez). Dönen: `echora.exe`nin tam yolu.
 pub fn zip_ac(bayt: &[u8], hedef: &Path) -> Result<PathBuf, String> {
     let g = zip_isle(bayt, Some(hedef))?;
     let kok = kok_klasoru(&g)?;
@@ -177,19 +177,58 @@ pub fn zip_ac(bayt: &[u8], hedef: &Path) -> Result<PathBuf, String> {
     Ok(exe)
 }
 
-/// Saf karar: bu klasör eski bir kurulum artığı olarak silinsin mi? Yalnız ön ekli, yeterince eski
-/// ve içinde echora.exe olan klasörler silinir (başkasının klasörüne dokunulmasın).
-pub fn eski_klasor_silinsin_mi(ad: &str, yas: Duration, echora_var: bool) -> bool {
+/// Saf karar: bu klasör eski bir kurulum artığı olarak silinsin mi? Yalnız ön ekli ve yeterince eski
+/// klasörler; içindeki echora.exe çalışıyorsa (kullanımda) dokunulmaz. Yarım kalmış (echora.exe'siz)
+/// eski klasörler de silinir.
+pub fn eski_klasor_silinsin_mi(ad: &str, yas: Duration, kullanimda: bool) -> bool {
     let on_ek_uyuyor = ad.get(..KLASOR_ON_EKI.len()).is_some_and(|p| p.eq_ignore_ascii_case(KLASOR_ON_EKI));
-    on_ek_uyuyor && ad.len() > KLASOR_ON_EKI.len() && yas > ESKI_SINIRI && echora_var
+    on_ek_uyuyor && ad.len() > KLASOR_ON_EKI.len() && yas > ESKI_SINIRI && !kullanimda
 }
 
-fn echora_iceriyor_mu(klasor: &Path) -> bool {
-    if klasor.join("echora.exe").is_file() {
-        return true;
+/// `exe` çalışıyor ya da başka bir işlemce açık mı? Yazma erişimi + paylaşımsız açmayı dener (dosyaya
+/// yazılmaz, kısaltılmaz): çalışan bir imajın yazmaya açılması paylaşım ihlaliyle reddedilir.
+pub fn exe_kullanimda_mi(exe: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new().write(true).share_mode(0).open(exe).is_err()
+}
+
+/// Klasörde (kökte ya da bir alt klasörde) kullanımda olan bir echora.exe var mı?
+fn echora_kullanimda_mi(klasor: &Path) -> bool {
+    let mut adaylar = vec![klasor.join("echora.exe")];
+    if let Ok(d) = std::fs::read_dir(klasor) {
+        adaylar.extend(d.flatten().filter(|e| e.path().is_dir()).map(|e| e.path().join("echora.exe")));
     }
-    let Ok(d) = std::fs::read_dir(klasor) else { return false };
-    d.flatten().any(|e| e.path().is_dir() && e.path().join("echora.exe").is_file())
+    adaylar.iter().any(|a| a.is_file() && exe_kullanimda_mi(a))
+}
+
+/// Yeni, benzersiz hedef klasörü DIŞLAMALI oluşturur (`create_dir`: var olan klasör hata verir, asla
+/// silinmez/sahiplenilmez); ad çakışırsa yeni ek üretip yeniden dener. `ek` her çağrıda yeni rastgele
+/// bir sonek döndürür.
+pub fn yeni_hedef_klasoru(temp: &Path, pid: u32, zaman: u64, mut ek: impl FnMut() -> String) -> Result<PathBuf, String> {
+    let mut son_hata = String::new();
+    for _ in 0..16 {
+        let yol = temp.join(format!("{KLASOR_ON_EKI}{pid}-{zaman}-{}", ek()));
+        match std::fs::create_dir(&yol) {
+            Ok(()) => return Ok(yol),
+            Err(h) if h.kind() == std::io::ErrorKind::AlreadyExists => son_hata = format!("{} zaten var", yol.display()),
+            Err(h) => return Err(format!("{} oluşturulamadı: {h}", yol.display())),
+        }
+    }
+    Err(format!("benzersiz geçici klasör oluşturulamadı ({son_hata})"))
+}
+
+/// 128 bitlik rastgele onaltılık sonek. Rastgelelik std'nin `RandomState` anahtarlarından gelir
+/// (işletim sistemi CSPRNG'si, std'nin zaten içe aktardığı bcryptprimitives.dll); ayrı bir
+/// bcrypt.dll bağımlılığı eklememek için `BCryptGenRandom` doğrudan çağrılmaz.
+pub fn rastgele_ek() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut s = String::new();
+    for _ in 0..2 {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(0);
+        s.push_str(&format!("{:016x}", h.finish()));
+    }
+    s
 }
 
 /// `temp` altındaki eski kurulum klasörlerini siler (hatalar yok sayılır: exe çalışıyor olabilir).
@@ -205,7 +244,7 @@ pub fn eskileri_temizle(temp: &Path, simdi: SystemTime) -> usize {
             continue;
         }
         let yas = m.modified().ok().and_then(|t| simdi.duration_since(t).ok()).unwrap_or(Duration::ZERO);
-        if eski_klasor_silinsin_mi(&ad, yas, echora_iceriyor_mu(&yol)) && std::fs::remove_dir_all(&yol).is_ok() {
+        if eski_klasor_silinsin_mi(&ad, yas, echora_kullanimda_mi(&yol)) && std::fs::remove_dir_all(&yol).is_ok() {
             silinen += 1;
         }
     }
@@ -215,6 +254,7 @@ pub fn eskileri_temizle(temp: &Path, simdi: SystemTime) -> usize {
 #[cfg(test)]
 mod testler {
     use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
 
     fn s(n: u64) -> Duration {
         Duration::from_secs(n)
@@ -391,19 +431,60 @@ mod testler {
     #[test]
     fn eski_klasor_karari() {
         let gun = 24 * 3600;
-        assert!(eski_klasor_silinsin_mi("Echora-Kurulum-123-456", s(gun + 1), true));
-        assert!(eski_klasor_silinsin_mi("echora-kurulum-1-2", s(5 * gun), true));
+        // (ad, yaş, kullanımda)
+        assert!(eski_klasor_silinsin_mi("Echora-Kurulum-123-456", s(gun + 1), false));
+        assert!(eski_klasor_silinsin_mi("echora-kurulum-1-2", s(5 * gun), false));
         // Tam 1 gün henüz eski sayılmaz; taze klasör de değil.
-        assert!(!eski_klasor_silinsin_mi("Echora-Kurulum-1-2", s(gun), true));
-        assert!(!eski_klasor_silinsin_mi("Echora-Kurulum-1-2", s(60), true));
-        // İçinde echora.exe yok: başkasına ait olabilir.
-        assert!(!eski_klasor_silinsin_mi("Echora-Kurulum-1-2", s(5 * gun), false));
+        assert!(!eski_klasor_silinsin_mi("Echora-Kurulum-1-2", s(gun), false));
+        assert!(!eski_klasor_silinsin_mi("Echora-Kurulum-1-2", s(60), false));
+        // Çalışan echora.exe içeren klasöre dokunulmaz.
+        assert!(!eski_klasor_silinsin_mi("Echora-Kurulum-1-2", s(5 * gun), true));
         // Ön ek uymuyor.
-        assert!(!eski_klasor_silinsin_mi("Baska-Klasor", s(5 * gun), true));
-        assert!(!eski_klasor_silinsin_mi("Echora-Kurulum-", s(5 * gun), true));
-        assert!(!eski_klasor_silinsin_mi("Echora", s(5 * gun), true));
+        assert!(!eski_klasor_silinsin_mi("Baska-Klasor", s(5 * gun), false));
+        assert!(!eski_klasor_silinsin_mi("Echora-Kurulum-", s(5 * gun), false));
+        assert!(!eski_klasor_silinsin_mi("Echora", s(5 * gun), false));
         // Çok baytlı karakter ön ek sınırına denk gelse de panik yok.
-        assert!(!eski_klasor_silinsin_mi("Echora-Kurulıım-1", s(5 * gun), true));
+        assert!(!eski_klasor_silinsin_mi("Echora-Kurulıım-1", s(5 * gun), false));
+    }
+
+    #[test]
+    fn calisan_exe_kullanimda_sayilir() {
+        // Bu test ikilisi şu an çalışıyor: yazmaya paylaşımsız açılamaz.
+        assert!(exe_kullanimda_mi(&std::env::current_exe().unwrap()));
+        let t = Gecici::yeni("kullanim");
+        let f = t.0.join("a.exe");
+        std::fs::write(&f, b"x").unwrap();
+        assert!(!exe_kullanimda_mi(&f));
+        let acik = std::fs::File::options().write(true).share_mode(0).open(&f).unwrap();
+        assert!(exe_kullanimda_mi(&f));
+        drop(acik);
+        assert!(!exe_kullanimda_mi(&f));
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+    }
+
+    #[test]
+    fn hedef_klasoru_dislamali_olusur_ve_varsa_silinmez() {
+        let t = Gecici::yeni("hedef");
+        // Önceden aynı adla var olan klasörün içeriği korunmalı, yeni ad denenmeli.
+        let onceden = t.0.join(format!("{KLASOR_ON_EKI}7-9-ayni"));
+        std::fs::create_dir_all(&onceden).unwrap();
+        std::fs::write(onceden.join("dokunma.txt"), b"x").unwrap();
+        let mut n = 0;
+        let yol = yeni_hedef_klasoru(&t.0, 7, 9, || {
+            n += 1;
+            if n == 1 { "ayni".into() } else { "yeni".into() }
+        })
+        .unwrap();
+        assert_eq!(yol, t.0.join(format!("{KLASOR_ON_EKI}7-9-yeni")));
+        assert!(yol.is_dir());
+        assert!(onceden.join("dokunma.txt").is_file());
+        // Sürekli çakışma: sonsuz döngü yok, hata döner.
+        assert!(yeni_hedef_klasoru(&t.0, 7, 9, || "ayni".into()).is_err());
+        // Rastgele ekler benzersiz ve 32 onaltılık karakter.
+        let (a, b) = (rastgele_ek(), rastgele_ek());
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
     }
 
     #[test]
@@ -417,14 +498,22 @@ mod testler {
             }
         };
         ac("Echora-Kurulum-1-1", true);
-        ac("Echora-Kurulum-2-2", false);
+        ac("Echora-Kurulum-2-2", false); // yarım kalmış: exe'siz
+        ac("Echora-Kurulum-4-4", true); // exe kullanımda (açık tutulur)
         ac("Baska", true);
-        // "Şimdi" 3 gün sonrası: hepsi eski sayılır; yalnız ön ekli + exe'li silinmeli.
+        let kullanimda = std::fs::File::options()
+            .write(true)
+            .share_mode(0)
+            .open(t.0.join("Echora-Kurulum-4-4").join("Echora-0.1.0-win64").join("echora.exe"))
+            .unwrap();
+        // "Şimdi" 3 gün sonrası: hepsi eski sayılır; ön ekli ve kullanımda olmayanlar silinmeli.
         let simdi = SystemTime::now() + Duration::from_secs(3 * 24 * 3600);
-        assert_eq!(eskileri_temizle(&t.0, simdi), 1);
+        assert_eq!(eskileri_temizle(&t.0, simdi), 2);
         assert!(!t.0.join("Echora-Kurulum-1-1").exists());
-        assert!(t.0.join("Echora-Kurulum-2-2").exists());
+        assert!(!t.0.join("Echora-Kurulum-2-2").exists());
+        assert!(t.0.join("Echora-Kurulum-4-4").exists());
         assert!(t.0.join("Baska").exists());
+        drop(kullanimda);
         // Gerçek "şimdi": taze klasörler silinmez.
         ac("Echora-Kurulum-3-3", true);
         assert_eq!(eskileri_temizle(&t.0, SystemTime::now()), 0);

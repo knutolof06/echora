@@ -102,6 +102,11 @@ pub fn ham_metin(k: Key, m: Modifiers) -> Option<String> {
 
 /// Yakalanan basış: geçerliyse kanonik metin, değilse kullanıcıya gösterilecek neden.
 pub fn yakala(k: Key, m: Modifiers) -> Result<String, String> {
+    // `,` `.` `-` karakterden yakalanır ama çalışma zamanı sabit OEM tuş kodunu kaydeder: Türkçe
+    // Q klavyede başka bir fiziksel tuşa bağlanabilir.
+    if matches!(k, Key::Comma | Key::Period | Key::Minus) {
+        return Err("bu tuş klavye düzenine göre değişir; harf, rakam ya da F tuşu seçin".into());
+    }
     let ham = ham_metin(k, m).ok_or_else(|| format!("{} tuşu kısayolda kullanılamaz", k.name()))?;
     komut::kisayol_coz(&ham).map(|k| k.metin)
 }
@@ -129,7 +134,6 @@ mod testler {
         assert_eq!(yakala(Key::Space, m(true, true, false)).as_deref(), Ok("ctrl+alt+space"));
         assert_eq!(yakala(Key::P, m(true, true, true)).as_deref(), Ok("ctrl+alt+shift+p"));
         assert_eq!(yakala(Key::F5, m(false, true, false)).as_deref(), Ok("alt+f5"));
-        assert_eq!(yakala(Key::Comma, m(true, false, false)).as_deref(), Ok("ctrl+virgul"));
         // F13-F24 değiştiricisiz kabul.
         assert_eq!(yakala(Key::F13, m(false, false, false)).as_deref(), Ok("f13"));
     }
@@ -141,6 +145,10 @@ mod testler {
         assert!(yakala(Key::A, m(false, false, true)).is_err());
         assert!(yakala(Key::Backspace, m(true, false, false)).is_err());
         assert!(yakala(Key::F30, m(true, false, false)).is_err());
+        // Düzene bağlı noktalama tuşları reddedilir.
+        for k in [Key::Comma, Key::Period, Key::Minus] {
+            assert!(yakala(k, m(true, true, false)).unwrap_err().contains("klavye düzenine"));
+        }
     }
 
     #[test]

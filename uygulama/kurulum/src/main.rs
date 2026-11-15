@@ -93,8 +93,15 @@ fn hazirla() -> Result<PathBuf, String> {
     let simdi = SystemTime::now();
     paket::eskileri_temizle(&temp, simdi);
     let zaman = simdi.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let hedef = temp.join(format!("{}{}-{zaman}", paket::KLASOR_ON_EKI, std::process::id()));
-    paket::zip_ac(PAKET, &hedef)
+    let hedef = paket::yeni_hedef_klasoru(&temp, std::process::id(), zaman, paket::rastgele_ek)?;
+    match paket::zip_ac(PAKET, &hedef) {
+        Ok(exe) => Ok(exe),
+        Err(h) => {
+            // Yarım kalan açma bırakılmaz (yalnız bu süreç az önce oluşturduğu klasör silinir).
+            let _ = std::fs::remove_dir_all(&hedef);
+            Err(h)
+        }
+    }
 }
 
 /// Küçük "Echora hazırlanıyor…" penceresi (yalnız STATIC denetimi). Açılamazsa `None`: kurulum yine sürer.

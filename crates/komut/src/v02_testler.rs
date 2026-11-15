@@ -355,7 +355,7 @@ fn varsayilan_dosya_v02_alanlari() {
     let a = coz_ok(Ayarlar::varsayilan_toml());
     assert_eq!(a.dinleme_kipi, DinlemeKipi::Surekli);
     assert_eq!(a.dinleme_tusu.as_ref().unwrap().metin, "alt+win+space");
-    assert_eq!(a.palet_tusu.as_ref().unwrap().metin, "ctrl+alt+p");
+    assert_eq!(a.palet_tusu.as_ref().unwrap().metin, "ctrl+alt+shift+p");
     assert_eq!(a.dinleme_suresi_sn, 6);
     assert!(a.kisayollar.is_empty());
     assert!(!a.alkis.acik);

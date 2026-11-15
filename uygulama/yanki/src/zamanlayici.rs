@@ -15,6 +15,19 @@ pub const DOLUM_PAYI: Duration = Duration::from_millis(500);
 /// Duvar saatine göre bu kadardan geç kalmış zamanlayıcı ÇALIŞTIRILMAZ (bilgisayar uykudaydı:
 /// "beş dakika sonra ekranları kapat" saatler sonra uyanınca sürpriz olur).
 pub const GECIKME_SINIRI: Duration = Duration::from_secs(120);
+/// Aynı anda en çok bu kadar zamanlayıcı (fazlası reddedilir).
+pub const EN_COK_ZAMANLAYICI: usize = 20;
+/// Tık en az bu aralıkla kurulur (yuvarlama/erken uyanmayla sıfıra yakın döngü oluşmasın).
+pub const EN_KISA_TIK: Duration = Duration::from_secs(1);
+
+/// `ekle` reddi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EklemeHatasi {
+    /// `EN_COK_ZAMANLAYICI` dolu.
+    Dolu,
+    /// Aynı eylem aynı süreyle zaten bekliyor (kimliği).
+    ZatenKurulu(u64),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Zamanlayici {
@@ -23,6 +36,8 @@ pub struct Zamanlayici {
     pub eylem: Eylem,
     /// Asıl komutun gösterimi ("Bilgisayarı uyut").
     pub gosterim: String,
+    /// Kurulduğu süre (aynı (eylem, dakika) ikinci kez kurulmaz).
+    pub dakika: u32,
     pub bitis: Instant,
     /// Uyku/hazırda bekletmeyi de sayan bitiş (gecikme denetimi).
     pub bitis_duvar: SystemTime,
@@ -62,19 +77,34 @@ pub struct ZamanlayiciListesi {
 }
 
 impl ZamanlayiciListesi {
-    /// Yeni zamanlayıcı; kimliği döner (1'den başlar, yinelenmez).
-    pub fn ekle(&mut self, dakika: u32, eylem: Eylem, gosterim: &str, simdi: Instant, simdi_duvar: SystemTime) -> u64 {
+    /// Yeni zamanlayıcı; kimliği döner (1'den başlar, yinelenmez). Aynı (eylem, dakika) zaten
+    /// bekliyorsa ya da liste doluysa reddedilir.
+    pub fn ekle(
+        &mut self,
+        dakika: u32,
+        eylem: Eylem,
+        gosterim: &str,
+        simdi: Instant,
+        simdi_duvar: SystemTime,
+    ) -> Result<u64, EklemeHatasi> {
+        if let Some(z) = self.liste.iter().find(|z| z.dakika == dakika && z.eylem == eylem) {
+            return Err(EklemeHatasi::ZatenKurulu(z.kimlik));
+        }
+        if self.liste.len() >= EN_COK_ZAMANLAYICI {
+            return Err(EklemeHatasi::Dolu);
+        }
         self.sayac += 1;
         let sure = Duration::from_secs(u64::from(dakika) * 60);
         self.liste.push(Zamanlayici {
             kimlik: self.sayac,
             eylem,
             gosterim: gosterim.to_string(),
+            dakika,
             bitis: simdi + sure,
             bitis_duvar: simdi_duvar + sure,
             uyarildi: false,
         });
-        self.sayac
+        Ok(self.sayac)
     }
 
     #[cfg(test)]
@@ -143,8 +173,8 @@ impl ZamanlayiciListesi {
                 degisim.min(uyari)
             })
             .min()
-            // Sınırın hemen ARDINDAN uyan (yuvarlama aynı dakikada kalmasın).
-            .map(|d| d + Duration::from_millis(50))
+            // Sınırın hemen ARDINDAN uyan (yuvarlama aynı dakikada kalmasın); en az 1 sn.
+            .map(|d| (d + Duration::from_millis(50)).max(EN_KISA_TIK))
     }
 
     /// Tepsi ipucu satırı: en yakın zamanlayıcı ve (birden çoksa) kalan sayı.
@@ -188,8 +218,8 @@ mod testler {
         let (mut l, t, d) = liste_ve_an();
         assert!(l.bos_mu());
         assert_eq!(l.ipucu_satiri(t), None);
-        let a = l.ekle(30, Eylem::Uyut, "Bilgisayarı uyut", t, d);
-        let b = l.ekle(5, Eylem::EkranlariKapat, "Ekranları kapat", t, d);
+        let a = l.ekle(30, Eylem::Uyut, "Bilgisayarı uyut", t, d).unwrap();
+        let b = l.ekle(5, Eylem::EkranlariKapat, "Ekranları kapat", t, d).unwrap();
         assert_ne!(a, b);
         assert_eq!(l.siradaki().unwrap().kimlik, b);
         assert_eq!(l.sirali().iter().map(|z| z.kimlik).collect::<Vec<_>>(), [b, a]);
@@ -215,6 +245,36 @@ mod testler {
     }
 
     #[test]
+    fn ayni_eylem_ayni_sure_ikinci_kez_kurulmaz_ve_sinir() {
+        let (mut l, t, d) = liste_ve_an();
+        let a = l.ekle(5, Eylem::Uyut, "u", t, d).unwrap();
+        assert_eq!(l.ekle(5, Eylem::Uyut, "u", t, d), Err(EklemeHatasi::ZatenKurulu(a)));
+        // Farklı süre ya da farklı eylem kurulur.
+        assert!(l.ekle(10, Eylem::Uyut, "u", t, d).is_ok());
+        assert!(l.ekle(5, Eylem::EkranlariKapat, "e", t, d).is_ok());
+        // İptal edilen yeniden kurulabilir.
+        l.iptal(a).unwrap();
+        assert!(l.ekle(5, Eylem::Uyut, "u", t, d).is_ok());
+        // En çok 20.
+        let mut dk = 100;
+        while l.uzunluk() < EN_COK_ZAMANLAYICI {
+            l.ekle(dk, Eylem::Uyut, "u", t, d).unwrap();
+            dk += 1;
+        }
+        assert_eq!(l.ekle(999, Eylem::Uyut, "u", t, d), Err(EklemeHatasi::Dolu));
+        assert_eq!(l.uzunluk(), EN_COK_ZAMANLAYICI);
+    }
+
+    #[test]
+    fn tik_en_az_bir_saniye() {
+        let (mut l, t, d) = liste_ve_an();
+        l.ekle(5, Eylem::Uyut, "u", t, d).unwrap();
+        // Bitişe 10 ms kala (ya da geçmişte): 50 ms'lik döngü yerine 1 sn.
+        assert_eq!(l.sonraki_tik(t + Duration::from_secs(300) - Duration::from_millis(10)), Some(EN_KISA_TIK));
+        assert_eq!(l.sonraki_tik(t + Duration::from_secs(400)), Some(EN_KISA_TIK));
+    }
+
+    #[test]
     fn kalan_metinleri() {
         assert_eq!(kalan_metni(Duration::from_secs(29 * 60)), "29 dk");
         assert_eq!(kalan_metni(Duration::from_secs(28 * 60 + 1)), "29 dk");
@@ -228,12 +288,12 @@ mod testler {
     #[test]
     fn iptal_ve_hepsini_iptal() {
         let (mut l, t, d) = liste_ve_an();
-        let a = l.ekle(5, Eylem::Uyut, "u", t, d);
-        let b = l.ekle(10, Eylem::Uyut, "u", t, d);
+        let a = l.ekle(5, Eylem::Uyut, "u", t, d).unwrap();
+        let b = l.ekle(10, Eylem::Uyut, "u", t, d).unwrap();
         assert!(l.iptal(999).is_none());
         assert_eq!(l.iptal(a).unwrap().kimlik, a);
         assert!(l.iptal(a).is_none(), "iki kez iptal edilemez");
-        let c = l.ekle(15, Eylem::Uyut, "u", t, d);
+        let c = l.ekle(15, Eylem::Uyut, "u", t, d).unwrap();
         assert!(c > b, "kimlik yeniden kullanılmaz");
         assert_eq!(l.hepsini_iptal().len(), 2);
         assert!(l.bos_mu());
@@ -243,15 +303,15 @@ mod testler {
     #[test]
     fn dolum_pay_ile_ve_sirayla() {
         let (mut l, t, d) = liste_ve_an();
-        let b = l.ekle(10, Eylem::Uyut, "b", t, d);
-        let a = l.ekle(5, Eylem::EkranlariKapat, "a", t, d);
+        let b = l.ekle(10, Eylem::Uyut, "b", t, d).unwrap();
+        let a = l.ekle(5, Eylem::EkranlariKapat, "a", t, d).unwrap();
         assert!(l.dolanlar(t + Duration::from_secs(5 * 60 - 1)).is_empty());
         // Win32 zamanlayıcısı biraz erken uyandı: yine dolmuş sayılır.
         let d1 = l.dolanlar(t + Duration::from_secs(5 * 60) - Duration::from_millis(300));
         assert_eq!(d1.iter().map(|z| z.kimlik).collect::<Vec<_>>(), [a]);
         assert_eq!(l.uzunluk(), 1);
         // Geç uyanınca birikmiş olanlar bitiş sırasıyla gelir.
-        let c = l.ekle(1, Eylem::Uyut, "c", t, d);
+        let c = l.ekle(1, Eylem::Uyut, "c", t, d).unwrap();
         let d2 = l.dolanlar(t + Duration::from_secs(3600));
         assert_eq!(d2.iter().map(|z| z.kimlik).collect::<Vec<_>>(), [c, b]);
         assert!(l.bos_mu());
@@ -270,7 +330,7 @@ mod testler {
     #[test]
     fn son_dakika_uyarisi_bir_kez() {
         let (mut l, t, d) = liste_ve_an();
-        let a = l.ekle(5, Eylem::Uyut, "Bilgisayarı uyut", t, d);
+        let a = l.ekle(5, Eylem::Uyut, "Bilgisayarı uyut", t, d).unwrap();
         assert!(l.uyarilacaklar(t + Duration::from_secs(3 * 60)).is_empty());
         let u = l.uyarilacaklar(t + Duration::from_secs(4 * 60 + 1));
         assert_eq!(u, [(a, "Bilgisayarı uyut".to_string())]);
@@ -282,7 +342,7 @@ mod testler {
     fn sonraki_tik_dakika_degisimi_ve_uyari() {
         let (mut l, t, d) = liste_ve_an();
         assert_eq!(l.sonraki_tik(t), None, "zamanlayıcı yokken uyanma yok");
-        l.ekle(5, Eylem::Uyut, "u", t, d);
+        l.ekle(5, Eylem::Uyut, "u", t, d).unwrap();
         // 5:00 kalan → "5 dk"; 4:00'e inince "4 dk": 60 sn sonra (+50 ms).
         assert_eq!(l.sonraki_tik(t), Some(Duration::from_millis(60_050)));
         // 1:30 kalan: dakika değişimi 30 sn sonra, uyarı (1:00) da 30 sn sonra.
