@@ -1,0 +1,72 @@
+# Faz 0 sınama listesi: 20 ifade.
+# `ifade`   : tanıyıcıya verilen yazım. Yalnız modelin sözlüğündeki kelimeler kullanılabilir
+#             (ör. "chrome" sözlükte yok, Türkçe okunuşu "krom" var).
+# `gosterim`: kullanıcıya gösterilecek yazım; verilmezse `ifade` kullanılır.
+# `riskli`  : true ise tetik kelimesiyle söylenmelidir.
+
+tetik = "atlas"
+
+[[komut]]
+ifade = "ekranı kapat"
+riskli = true
+
+[[komut]]
+ifade = "ekranları kapat"
+riskli = true
+
+[[komut]]
+ifade = "ana ekranı kapat"
+riskli = true
+
+[[komut]]
+ifade = "hepsini kapat"
+riskli = true
+
+[[komut]]
+ifade = "ekranları aç"
+
+[[komut]]
+ifade = "krom aç"
+gosterim = "chrome aç"
+
+[[komut]]
+ifade = "not defteri aç"
+
+[[komut]]
+ifade = "hesap makinesi aç"
+
+[[komut]]
+ifade = "youtube aç"
+
+[[komut]]
+ifade = "sesi aç"
+
+[[komut]]
+ifade = "sesi kıs"
+
+[[komut]]
+ifade = "sesi kapat"
+
+[[komut]]
+ifade = "sesi yüzde yirmi yap"
+
+[[komut]]
+ifade = "sesi yüzde elli yap"
+
+[[komut]]
+ifade = "müziği durdur"
+
+[[komut]]
+ifade = "müziği oynat"
+
+[[komut]]
+ifade = "sonraki"
+
+[[komut]]
+ifade = "önceki"
+
+[[komut]]
+ifade = "pencereyi taşı"
+
+[[komut]]
+ifade = "geri al"

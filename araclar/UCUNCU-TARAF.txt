@@ -1,0 +1,30 @@
+Echora — üçüncü taraf bileşenleri
+==================================
+
+Bu paket aşağıdaki üçüncü taraf bileşenlerini içerir; her biri kendi lisansıyla dağıtılır.
+
+1. Vosk konuşma tanıma kütüphanesi (libvosk.dll) — Alpha Cephei Inc.
+   Lisans : Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+   Kaynak : https://github.com/alphacep/vosk-api — sürüm 0.3.45 (vosk-win64-0.3.45.zip)
+   Vosk; Kaldi ve OpenFst (ikisi de Apache-2.0) üzerine kuruludur.
+
+2. Türkçe tanıma modeli (modeller/vosk-model-small-tr-0.3) — Alpha Cephei Inc.
+   Lisans : Apache License 2.0
+   Kaynak : https://alphacephei.com/vosk/models/vosk-model-small-tr-0.3.zip
+
+3. MinGW-w64 / GCC çalışma zamanı kütüphaneleri (vosk-win64-0.3.45 paketiyle gelir)
+   libstdc++-6.dll, libgcc_s_seh-1.dll : GPLv3 + GCC Runtime Library Exception 3.1
+   libwinpthread-1.dll                 : MinGW-w64 winpthreads, MIT lisansı
+   Kaynak : https://gcc.gnu.org — https://www.mingw-w64.org
+
+4. WebRTC ses etkinliği algılayıcısı (VAD) — echora.exe'ye derlenmiştir
+   Telif : The WebRTC project authors
+   Lisans : BSD 3-Clause (https://webrtc.org/support/license)
+   Rust sarmalayıcısı webrtc-vad crate'idir (MIT).
+
+5. Rust crate'leri — echora.exe'ye derlenmiştir
+   cargo-about kullanılmadı. Derlemedeki crate'lerin tam listesi kaynak deposundaki Cargo.lock
+   dosyasındadır; her crate kendi lisansıyla (çoğunlukla MIT ve/veya Apache-2.0) dağıtılır ve
+   lisans metni crates.io'daki paketindedir. Arayüz kütüphanesi egui'nin gömülü yazı tipleri:
+   Ubuntu-Light (Ubuntu Font Licence 1.0), Hack (MIT / Bitstream Vera), Noto Emoji ve
+   emoji-icon-font (SIL Open Font License 1.1).

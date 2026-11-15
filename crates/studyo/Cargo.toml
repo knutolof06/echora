@@ -1,0 +1,27 @@
+[package]
+name = "studyo"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+komut = { path = "../komut" }
+sahne = { path = "../sahne" }
+kulak = { path = "../kulak" }
+eylemci = { path = "../eylemci" }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+sha2 = "0.11.1"
+serde_json = "1.0.154"
+png = "0.18.1"
+serde = { version = "1.0.229", features = ["derive"] }

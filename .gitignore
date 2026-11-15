@@ -1,0 +1,6 @@
+target/
+modeller/*
+!modeller/OKU.md
+*.wav
+dist/
+docs/

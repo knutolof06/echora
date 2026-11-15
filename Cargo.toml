@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/kulak", "crates/anlayici", "araclar/olcum", "crates/komut", "crates/eylemci", "crates/sahne", "uygulama/yanki", "crates/studyo"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "abort"
+strip = true

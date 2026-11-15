@@ -1,0 +1,194 @@
+# Sürüm hattı: "vX.Y.Z" etiketi push'lanınca (ya da elle, var olan bir etiket için) derler, sınar,
+# paketler ve GitHub Release oluşturur: Echora-X.Y.Z-win64.zip + SHA256SUMS.txt.
+#
+# İki iş:
+# - derle  : yalnız okuma izni; depo kimlik bilgisi saklanmadan alınır; ÖNBELLEK YOK (sürüm
+#            ikilisi önceki koşulardan kalan derleme çıktısından etkilenmesin). Çıktı artifact olur.
+# - yayinla: yazma izni; depoyu almaz, kod çalıştırmaz; yalnız artifact'i indirip `gh release create`.
+#            Aynı etiketle release zaten varsa BAŞARISIZ olur (yayınlanmış varlıklar değiştirilmez).
+#
+# Etiket Cargo.toml'daki workspace sürümüyle aynı olmalı (v0.1.0 <-> version = "0.1.0").
+# Sürüm notu: SURUM-NOTLARI.md'deki "## vX.Y.Z" (ya da "## X.Y.Z") bölümü; yoksa açıklamalı
+# etiketin mesajı; o da yoksa kısa varsayılan metin.
+#
+# Eylemler COMMIT SHA ile sabitlenmiştir. Satır içi betikler ASCII'dir (PowerShell 5.1);
+# Türkçe metinli işler araclar/*.ps1'dedir.
+name: Surum
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      etiket:
+        description: 'Yayinlanacak var olan etiket (or. v0.1.0)'
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: surum-${{ github.event.inputs.etiket || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_ARAC: stable-x86_64-pc-windows-gnu
+  # Girdiler betiklere yalnız ortam değişkeniyle geçer (betik enjeksiyonu olmasın).
+  ETIKET: ${{ github.event.inputs.etiket || github.ref_name }}
+
+jobs:
+  derle:
+    name: Derle, sina, paketle
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: powershell
+    outputs:
+      surum: ${{ steps.surum.outputs.surum }}
+    steps:
+      - name: Etiket bicimi
+        run: |
+          if ($env:ETIKET -notmatch '^v\d+\.\d+\.\d+$') { throw "Etiket vX.Y.Z olmali (onsurum desteklenmez): '$env:ETIKET'" }
+
+      - name: Depoyu al (etiket)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.ETIKET }}
+          persist-credentials: false
+
+      - name: Etiket Cargo.toml surumuyle eslesiyor mu
+        id: surum
+        run: |
+          # Aciklamali etiketin nesnesi (mesaji icin) acikca alinir (genel depo; kimlik gerekmez).
+          git fetch --force --no-tags origin "refs/tags/$($env:ETIKET):refs/tags/$($env:ETIKET)"
+          $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $surum = ($meta.packages | Where-Object { $_.name -eq 'yanki' }).version
+          if ("v$surum" -ne $env:ETIKET) { throw "Etiket $env:ETIKET, Cargo.toml surumu $surum: eslesmiyor" }
+          Write-Host "Surum: $surum"
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "surum=$surum`n")
+
+      - name: MinGW-w64 (gcc, windres) ara
+        id: mingw
+        run: |
+          if ((Get-Command windres -ErrorAction SilentlyContinue) -and (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            Write-Host "PATH'te: $((Get-Command windres).Source)"
+            [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "var=evet`n"); exit 0
+          }
+          foreach ($k in 'C:\mingw64\bin', 'C:\msys64\mingw64\bin') {
+            if ((Test-Path "$k\windres.exe") -and (Test-Path "$k\gcc.exe")) {
+              Write-Host "Goruntude: $k"
+              [IO.File]::AppendAllText($env:GITHUB_PATH, "$k`n")
+              [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "var=evet`n"); exit 0
+            }
+          }
+          Write-Host "MinGW-w64 bulunamadi; MSYS2 ile kurulacak"
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "var=hayir`n")
+
+      - name: MinGW-w64 kur (MSYS2, goruntude yoksa)
+        id: msys2
+        if: steps.mingw.outputs.var == 'hayir'
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: MINGW64
+          update: false
+          cache: false
+          path-type: inherit
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
+
+      - name: MSYS2 MinGW-w64'u PATH'e ekle
+        if: steps.mingw.outputs.var == 'hayir'
+        env:
+          MSYS2_KOK: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $k = Join-Path $env:MSYS2_KOK 'mingw64\bin'
+          if (-not (Test-Path "$k\windres.exe")) { throw "windres yok: $k" }
+          [IO.File]::AppendAllText($env:GITHUB_PATH, "$k`n")
+
+      - name: Rust arac zinciri
+        run: |
+          rustup toolchain install $env:RUST_ARAC --profile minimal --no-self-update
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default $env:RUST_ARAC
+          rustc -vV
+          windres --version
+
+      - name: Vosk modeli ve kutuphanesi (SHA-256 dogrulamali)
+        run: .\araclar\modelleri-indir.ps1
+
+      - name: Sina
+        run: |
+          $env:PATH = "$PWD\modeller\vosk-win64-0.3.45;$env:PATH"
+          cargo test --workspace --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Paketle
+        run: .\araclar\paketle.ps1
+
+      - name: Surum notu
+        run: |
+          $notlar = ''
+          if (Test-Path SURUM-NOTLARI.md) {
+            $satirlar = [IO.File]::ReadAllLines((Resolve-Path SURUM-NOTLARI.md), [Text.Encoding]::UTF8)
+            $s = $env:ETIKET.TrimStart('v')
+            $icinde = $false
+            $parca = New-Object System.Collections.Generic.List[string]
+            foreach ($l in $satirlar) {
+              if ($l -match '^##\s+v?(\d+\.\d+\.\d+)\b') { $icinde = ($Matches[1] -eq $s); continue }
+              if ($l -match '^#\s') { $icinde = $false; continue }
+              if ($icinde) { $parca.Add($l) }
+            }
+            $notlar = ($parca -join "`n").Trim()
+          }
+          if (-not $notlar) { $notlar = (git tag -l --format='%(contents)' $env:ETIKET | Out-String).Trim() }
+          if (-not $notlar) { $notlar = "Echora $($env:ETIKET)" }
+          $notlar += "`n`nIndirme: Echora-$($env:ETIKET.TrimStart('v'))-win64.zip (SHA-256: SHA256SUMS.txt)"
+          [IO.File]::WriteAllText("$PWD\dist\notlar.md", $notlar, (New-Object Text.UTF8Encoding($false)))
+          Get-Content "$PWD\dist\notlar.md" -Encoding UTF8
+
+      - name: Artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: echora-surum
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/Echora-${{ steps.surum.outputs.surum }}-win64.zip
+            dist/SHA256SUMS.txt
+            dist/notlar.md
+
+  yayinla:
+    name: GitHub Release
+    needs: derle
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Artifact'i al
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: echora-surum
+          path: dist
+
+      - name: GitHub Release olustur (varsa basarisiz)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          SURUM: ${{ needs.derle.outputs.surum }}
+        run: |
+          if ($env:ETIKET -ne "v$($env:SURUM)") { throw "Etiket/surum uyusmuyor: $env:ETIKET / $env:SURUM" }
+          $zip = "dist\Echora-$($env:SURUM)-win64.zip"
+          $ozet = "dist\SHA256SUMS.txt"
+          foreach ($f in $zip, $ozet, "dist\notlar.md") { if (-not (Test-Path $f)) { throw "yok: $f" } }
+          # Artifact'in kendi icinde tutarli oldugu son kez denetlenir.
+          $h = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if (-not ((Get-Content $ozet -Raw) -match "(?m)^$h  Echora-$([regex]::Escape($env:SURUM))-win64\.zip$")) { throw "SHA256SUMS zip ile uyusmuyor" }
+          # PowerShell 5.1'de yerel komutun stderr'ini yonlendirmek hata kaydina donusur; cmd ile sorulur.
+          cmd /c "gh release view %ETIKET% >nul 2>&1"
+          if ($LASTEXITCODE -eq 0) { throw "$env:ETIKET icin release zaten var; yayinlanmis varliklar degistirilmez. Yeni surum numarasi kullanin." }
+          gh release create $env:ETIKET $zip $ozet --verify-tag --title "Echora $($env:SURUM)" --notes-file dist\notlar.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

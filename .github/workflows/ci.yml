@@ -1,0 +1,117 @@
+# Derleme ve birim testleri: main'e push ve her pull request'te.
+# Araç zinciri yereldekiyle aynı: stable-x86_64-pc-windows-gnu + MinGW-w64 (gcc, windres).
+# Üçüncü taraf ve resmi eylemler sürüm etiketiyle değil COMMIT SHA ile sabitlenmiştir.
+# Satır içi betikler bilerek ASCII'dir (PowerShell 5.1 BOM'suz geçici dosyayı ANSI okur);
+# Türkçe metinli işler araclar/*.ps1 betiklerindedir (UTF-8 BOM'lu).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_ARAC: stable-x86_64-pc-windows-gnu
+
+jobs:
+  derle-sina:
+    name: Derle ve sına (Windows, gnu)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Depoyu al
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: MinGW-w64 (gcc, windres) ara
+        id: mingw
+        run: |
+          if ((Get-Command windres -ErrorAction SilentlyContinue) -and (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            Write-Host "PATH'te: $((Get-Command windres).Source)"
+            [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "var=evet`n"); exit 0
+          }
+          foreach ($k in 'C:\mingw64\bin', 'C:\msys64\mingw64\bin') {
+            if ((Test-Path "$k\windres.exe") -and (Test-Path "$k\gcc.exe")) {
+              Write-Host "Goruntude: $k"
+              [IO.File]::AppendAllText($env:GITHUB_PATH, "$k`n")
+              [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "var=evet`n"); exit 0
+            }
+          }
+          Write-Host "MinGW-w64 bulunamadi; MSYS2 ile kurulacak"
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "var=hayir`n")
+
+      - name: MinGW-w64 kur (MSYS2, goruntude yoksa)
+        id: msys2
+        if: steps.mingw.outputs.var == 'hayir'
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: MINGW64
+          update: false
+          path-type: inherit
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
+
+      - name: MSYS2 MinGW-w64'u PATH'e ekle
+        if: steps.mingw.outputs.var == 'hayir'
+        env:
+          MSYS2_KOK: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $k = Join-Path $env:MSYS2_KOK 'mingw64\bin'
+          if (-not (Test-Path "$k\windres.exe")) { throw "windres yok: $k" }
+          [IO.File]::AppendAllText($env:GITHUB_PATH, "$k`n")
+
+      - name: Rust araç zinciri
+        run: |
+          rustup toolchain install $env:RUST_ARAC --profile minimal --no-self-update
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default $env:RUST_ARAC
+          rustc -vV
+          gcc --version
+          windres --version
+
+      - name: Cargo onbellegi
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-gnu-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-gnu-
+
+      # Yalniz ARSIVLER onbellege alinir; betik her kosuda SHA-256'yi yeniden hesaplar ve
+      # klasorleri dogrulanmis arsivden yeniden acar (onbellekteki acilmis dosyaya guvenilmez).
+      - name: Vosk arsiv onbellegi
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            modeller/vosk-model-small-tr-0.3.zip
+            modeller/vosk-win64-0.3.45.zip
+          key: vosk-zip-${{ hashFiles('araclar/modelleri-indir.ps1') }}
+
+      - name: Vosk modeli ve kutuphanesi (SHA-256 dogrulamali)
+        run: .\araclar\modelleri-indir.ps1
+
+      - name: Derle (uyarilar hata)
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          cargo build --workspace --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Sina
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          $env:PATH = "$PWD\modeller\vosk-win64-0.3.45;$env:PATH"
+          cargo test --workspace --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

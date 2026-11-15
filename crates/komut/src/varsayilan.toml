@@ -1,0 +1,352 @@
+# Echora ayar dosyası.
+#
+# Bu dosya ses komutlarınızı tanımlar. Stüdyo ("stüdyo aç") bu dosyayı sizin için düzenler;
+# elle de değiştirebilirsiniz. Hatalı bir dosya yüklenmez ve eski ayarlar korunur.
+#
+# --- GENEL ---
+# tetik                   : Riskli komutlardan önce söylenen tek kelime ("atlas ekranları kapat").
+# guven_esigi             : 0.0 ile 1.0 arası; tanıyıcı bundan düşük güvenli sonuçları yok sayar.
+# model_yolu              : (isteğe bağlı) ses tanıma modelinin klasörü.
+# mikrofon                : (isteğe bağlı) mikrofon aygıt kimliği; yoksa varsayılan mikrofon.
+# model_birakma_sn        : Konuşma bittikten kaç saniye sonra tanıma modeli bellekten bırakılır
+#                           (5-3600, varsayılan 30). Kısa değer belleği çabuk boşaltır, ilk
+#                           komuttaki gecikmeyi artırır.
+# windows_ile_baslat      : (varsayılan false) yalnız Stüdyo okur ve yazar.
+# anlasilmayanlari_kaydet : (varsayılan false) true ise anlaşılmayan konuşmaların METNİ (ses değil)
+#                           yalnız bu bilgisayarda saklanır ve Stüdyo'da listelenir; oradan
+#                           komutlara eş anlamlı olarak eklenebilir.
+# sessiz_saatler          : Bu saatlerde dinleme duraklar; komut çalışmaz, efekt oynamaz.
+#                           ["SS:DD-SS:DD", ...]; gece yarısını aşabilir ("23:00-07:30").
+# guncelleme_otomatik     : (varsayılan true) Echora günde bir kez yeni sürüm olup olmadığını
+#                           denetler.
+#
+# --- EFEKTLER ---
+# efektler_acik           : (varsayılan true) false ise HİÇBİR efekt oynamaz; komutlar yine çalışır.
+# olay_efektleri_acik     : (varsayılan true) false ise yalnız ipucu efektleri (duyuldu,
+#                           anlaşılmadı, tetik gerekli, hata) oynamaz; komut efektleri sürer.
+#                           efektler_acik = false iken bunun bir önemi yoktur.
+# efekt_kipi              : "komuta_gore" (varsayılan; her komutun kendi efekti) ya da "rastgele".
+# efekt_tema              : Tek efekt kullanmak için efekt adı ("nefes"). efekt_kipi ile birlikte
+#                           yazılamaz. Adlar: nefes, kenar_nabzi, ses_dalgasi, tup_kapanisi, perde,
+#                           portal, sok_dalgasi, sonar, aurora, kivilcim, murekkep, yildiz_kaymasi,
+#                           kinetik_yazi, harf_yagmuru, bozulma, tarama.
+# [efekt_ortak]           : TÜM efektlere birden uygulanan ayar: renk1, renk2 ("#RRGGBB"),
+#                           siddet (0.0-1.0), ekran ("ana" | "imlec" | "hepsi"), sese_tepki,
+#                           hiz (0.5-2.0; 1.0 = katalog süresi, 2.0 = iki kat hızlı). Süre
+#                           "katalog süresi / hiz" olur ve 200-3000 ms'ye kenetlenir.
+# [efektler.<ad>]         : YALNIZ İSTİSNA İÇİNDİR. Bir efektin ortak ayardan ayrılmasını
+#                           istediğiniz alanlarını yazın: renk1, renk2, siddet, ekran, sese_tepki,
+#                           sure_ms (200-3000; yazılırsa hız uygulanmaz). Yazılmayan alan
+#                           [efekt_ortak]'tan gelir. Tablosu olmayan efekt tamamen ortak ayarı
+#                           kullanır; ortak ayarı değiştirmek tablosu olan efektlerin yalnız
+#                           yazılmamış alanlarını etkiler.
+# [olaylar.<olay>]        : Komut dışı ekran ipuçları: duyuldu, anlasilmadi, tetik_gerekli, hata.
+#                           Her olay için goster (false ise hiçbir şey olmaz), efekt ve efektin
+#                           ayarları bir arada yazılır: renk1, renk2, sure_ms, siddet, ekran,
+#                           sese_tepki. Olaylar anlamlı renklerini korur (gri, kehribar, kırmızı);
+#                           ortak ayardan yalnız hız uygulanır. "duyuldu" varsayılan olarak
+#                           KAPALIDIR; ipucunu açıp kapatan tek anahtar odur.
+#
+# --- EKRANLAR ---
+# [[ekran]]               : Monitör başına kapatma yöntemi: aygit ("\\\\.\\DISPLAY1"),
+#                           yontem ("otomatik" | "ddc" | "perde"). Yazılmazsa otomatik.
+#
+# --- UYGULAMALAR ---
+# [[uygulama]]            : Açılabilecek uygulamalar.
+#   soylenis   : Sizin söyleyeceğiniz yazım. Modelin bildiği kelimelerle, Türkçe okunuşla
+#                yazın ("chrome" değil "krom"). Yalnız harf ve boşluk.
+#   ad         : Ekranda gösterilecek ad.
+#   hedef      : Çalıştırılacak şey (exe adı, tam yol ya da web adresi).
+#   argumanlar : (isteğe bağlı) programa verilecek ek parametreler.
+#   surec      : (isteğe bağlı) kapatma ve öne getirme için süreç adı. Yazılmazsa hedefin dosya
+#                adından alınır ("chrome", "C:\...\notepad.exe" -> "notepad"). Hedef bir web
+#                adresiyse ve surec yoksa o uygulama için "kapat" ve "öne getir" komutları
+#                üretilmez.
+#
+# --- SAHNELER ---
+# [[sahne]]               : Tek cümleyle çalışan eylem dizisi. ad (görünen), soylenis ("iş"),
+#                           adimlar: her adım ya { bekle_ms = 500 } (0-10000) ya da
+#                           { eylem = "...", ... } ve eyleme göre şu alanlar:
+#                             uygulama_ac / uygulama_kapat / uygulama_one_getir : uygulama = "krom"
+#                             ses_ayarla : seviye = 20      ekrani_kapat : ekran = "sag"
+#                             ses_artir / ses_azalt : adim = 10 (1-100)   medya : tus = "..."
+#                             komut_calistir : komut = "..."   tus_gonder : tuslar = "..."
+#                           Sahne içinde sahne, geri_al, cik ve dinlemeyi_duraklat kullanılamaz.
+#                           Sahne komutları her zaman riskli sayılır (tetik kelimesi ister).
+#
+# --- KOMUTLAR ---
+# [[komut]]               : Söylenebilecek komutlar.
+#   ifadeler   : Aynı işi yapan söyleniş biçimleri; yalnız harf ve boşluk, tetik kelimesiyle
+#                başlamaz. Modelin bilmediği kelime tanınmaz.
+#   eylem      : ekranlari_kapat | ana_ekrani_kapat | ekrani_kapat | ekranlari_ac |
+#                uygulama_ac | uygulama_kapat | uygulama_one_getir | ses_ayarla | ses_artir |
+#                ses_azalt | sessize_al | sesi_ac | pencere_kucult | pencere_buyut |
+#                pencere_geri_yukle | pencereyi_tasi | masaustunu_goster | oturumu_kilitle |
+#                uyut | medya | dinlemeyi_duraklat | geri_al | studyoyu_ac |
+#                ayarlari_yeniden_yukle | cik | sahne | komut_calistir | tus_gonder
+#   riskli     : true ise komut yalnız tetik kelimesiyle çalışır. Yazılmazsa eyleme göre
+#                belirlenir: ekran kapatanlar, uygulama kapatma, oturum kilitleme, uyutma,
+#                dinlemeyi duraklatma, çıkış, sahne, komut çalıştırma ve tuş gönderme riskli;
+#                diğerleri değil. Tek kelimelik ifadeler burada false yazsanız da otomatik
+#                riskli sayılır.
+#   efekt      : (isteğe bağlı) bu komuta özel efekt adı; yazılmazsa eyleme göre katalog atar.
+#   Eyleme göre ek alanlar:
+#     ekrani_kapat    : ekran = "sol" ("ana" | "ikinci" | "sol" | "sag"). Yazılmazsa ifade
+#                       {ekran} içermelidir.
+#     ses_artir/azalt : adim = 10 (1-100, varsayılan 10)
+#     medya           : tus = "oynat_duraklat" | "sonraki" | "onceki" | "durdur" (zorunlu)
+#     komut_calistir  : komut = "..." (zorunlu)      tus_gonder : tuslar = "ctrl+shift+esc" (zorunlu)
+#
+# Şablonlar (ifade başına en çok bir tane; yalnız belirtilen eylemlerde):
+#   {uygulama} : uygulama_ac, uygulama_kapat, uygulama_one_getir; her [[uygulama]] için açılır.
+#   {sayi}     : ses_ayarla; 0-100 arası her sayı Türkçe sözcükle açılır ("yirmi beş", "yüz").
+#   {ekran}    : ekrani_kapat; ana, ikinci, sol, sağ.
+#   {sahne}    : sahne; her [[sahne]]'nin söylenişi için açılır.
+#
+# SÖZLÜK KISITI: Tanıma modelinin sözlüğü sınırlıdır; bilmediği kelimeyi hiç tanımaz.
+# "chrome", "kilitle", "büyüt", "küçült" gibi kelimeler yoktur: "krom", "kitle", "indir"
+# gibi modelin bildiği kelimelerle yazın. Yeni bir ifadeyi önce Stüdyo'dan deneyin.
+
+tetik = "atlas"
+guven_esigi = 0.7
+efektler_acik = true
+olay_efektleri_acik = true
+guncelleme_otomatik = true
+
+# Tüm efektler için tek ayar. Bir efekti ayrıca değiştirmek isterseniz [efektler.<ad>] tablosuna
+# yalnız farklı olmasını istediğiniz alanları yazın (örnek: [efektler.aurora] renk1 = "#69F0AE").
+
+[efekt_ortak]
+renk1 = "#4FC3F7"
+renk2 = "#B388FF"
+siddet = 0.7
+ekran = "ana"
+sese_tepki = true
+hiz = 1.0
+
+# Ekran ipucu ayarları (isteğe bağlı). Aşağıdakiler varsayılan renk ön tanımlarıdır;
+# silerseniz ön tanım kullanılır.
+
+[olaylar.duyuldu]
+goster = false
+efekt = "ses_dalgasi"
+renk1 = "#4FC3F7"
+renk2 = "#B388FF"
+sure_ms = 1200
+siddet = 0.3
+ekran = "ana"
+sese_tepki = true
+
+[olaylar.anlasilmadi]
+goster = true
+efekt = "bozulma"
+renk1 = "#9E9E9E"
+renk2 = "#9E9E9E"
+sure_ms = 300
+siddet = 0.7
+ekran = "ana"
+sese_tepki = false
+
+[olaylar.tetik_gerekli]
+goster = true
+efekt = "kenar_nabzi"
+renk1 = "#FFB300"
+renk2 = "#FFB300"
+sure_ms = 400
+siddet = 0.7
+ekran = "ana"
+sese_tepki = false
+
+[olaylar.hata]
+goster = true
+efekt = "bozulma"
+renk1 = "#FF5252"
+renk2 = "#FF5252"
+sure_ms = 400
+siddet = 0.7
+ekran = "ana"
+sese_tepki = false
+
+# Uygulamalar. Web adresi hedeflerinde (youtube) süreç yoktur; kapat/öne getir üretilmez.
+
+[[uygulama]]
+soylenis = "krom"
+ad = "Chrome"
+hedef = "chrome"
+surec = "chrome"
+
+[[uygulama]]
+soylenis = "not defteri"
+ad = "Not Defteri"
+hedef = "notepad"
+surec = "notepad"
+
+# Windows'un Hesap Makinesi uygulaması "calc" ile açılır ama süreci "CalculatorApp" adıyla çalışır.
+[[uygulama]]
+soylenis = "hesap makinesi"
+ad = "Hesap Makinesi"
+hedef = "calc"
+surec = "CalculatorApp"
+
+[[uygulama]]
+soylenis = "youtube"
+ad = "YouTube"
+hedef = "https://www.youtube.com"
+
+# Sahneler: "atlas iş modu", "atlas film modu", "atlas gece modu".
+
+[[sahne]]
+ad = "İş"
+soylenis = "iş"
+adimlar = [
+  { eylem = "uygulama_ac", uygulama = "krom" },
+  { bekle_ms = 500 },
+  { eylem = "ses_ayarla", seviye = 30 },
+]
+
+[[sahne]]
+ad = "Film"
+soylenis = "film"
+adimlar = [
+  { eylem = "ses_ayarla", seviye = 70 },
+  { eylem = "ekrani_kapat", ekran = "sag" },
+]
+
+[[sahne]]
+ad = "Gece"
+soylenis = "gece"
+adimlar = [
+  { eylem = "ses_ayarla", seviye = 15 },
+  { eylem = "ekranlari_kapat" },
+]
+
+# --- Ekranlar ---
+
+[[komut]]
+ifadeler = ["ekranları kapat", "ekranı kapat", "hepsini kapat"]
+eylem = "ekranlari_kapat"
+riskli = true
+
+# "ana ekranı kapat", "ikinci ekranı kapat", "sol ekranı kapat", "sağ ekranı kapat".
+[[komut]]
+ifadeler = ["{ekran} ekranı kapat"]
+eylem = "ekrani_kapat"
+riskli = true
+
+[[komut]]
+ifadeler = ["ekranları aç", "ekranı aç"]
+eylem = "ekranlari_ac"
+
+# --- Uygulamalar ---
+
+[[komut]]
+ifadeler = ["{uygulama} aç"]
+eylem = "uygulama_ac"
+
+[[komut]]
+ifadeler = ["{uygulama} kapat"]
+eylem = "uygulama_kapat"
+
+[[komut]]
+ifadeler = ["{uygulama} öne getir"]
+eylem = "uygulama_one_getir"
+
+# --- Ses ---
+
+# "sesi yüzde yirmi beş yap": 0-100 arası her sayı.
+[[komut]]
+ifadeler = ["sesi yüzde {sayi} yap"]
+eylem = "ses_ayarla"
+
+[[komut]]
+ifadeler = ["sesi artır"]
+eylem = "ses_artir"
+adim = 10
+
+[[komut]]
+ifadeler = ["sesi azalt", "sesi kıs"]
+eylem = "ses_azalt"
+adim = 10
+
+[[komut]]
+ifadeler = ["sessize al", "sesi kapat"]
+eylem = "sessize_al"
+
+[[komut]]
+ifadeler = ["sesi aç"]
+eylem = "sesi_ac"
+
+# --- Pencere ---
+
+[[komut]]
+ifadeler = ["pencereyi indir"]
+eylem = "pencere_kucult"
+
+[[komut]]
+ifadeler = ["pencereyi tam ekran yap"]
+eylem = "pencere_buyut"
+
+[[komut]]
+ifadeler = ["pencereyi daralt"]
+eylem = "pencere_geri_yukle"
+
+[[komut]]
+ifadeler = ["pencereyi diğer ekrana taşı"]
+eylem = "pencereyi_tasi"
+
+[[komut]]
+ifadeler = ["masaüstü göster"]
+eylem = "masaustunu_goster"
+
+# --- Bilgisayar ---
+
+[[komut]]
+ifadeler = ["bilgisayarı kitle"]
+eylem = "oturumu_kilitle"
+
+[[komut]]
+ifadeler = ["bilgisayarı uyut"]
+eylem = "uyut"
+
+# --- Medya ---
+
+# Medya tuşu "oynat/duraklat" bir anahtardır: müzik çalıyorsa durdurur, durmuşsa oynatır.
+[[komut]]
+ifadeler = ["müziği durdur", "müziği oynat"]
+eylem = "medya"
+tus = "oynat_duraklat"
+
+[[komut]]
+ifadeler = ["sonraki şarkı"]
+eylem = "medya"
+tus = "sonraki"
+
+[[komut]]
+ifadeler = ["önceki şarkı"]
+eylem = "medya"
+tus = "onceki"
+
+# --- Echora'nın kendisi ---
+
+[[komut]]
+ifadeler = ["geri al"]
+eylem = "geri_al"
+
+[[komut]]
+ifadeler = ["stüdyo aç", "ayarları aç"]
+eylem = "studyoyu_ac"
+
+[[komut]]
+ifadeler = ["ayarları yeniden yükle"]
+eylem = "ayarlari_yeniden_yukle"
+
+[[komut]]
+ifadeler = ["dinlemeyi durdur"]
+eylem = "dinlemeyi_duraklat"
+riskli = true
+
+# --- Sahneler ---
+
+[[komut]]
+ifadeler = ["{sahne} modu"]
+eylem = "sahne"
