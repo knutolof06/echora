@@ -65,7 +65,7 @@ jobs:
           git fetch --force --no-tags origin "refs/tags/$($env:ETIKET):refs/tags/$($env:ETIKET)"
           $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
           $surum = ($meta.packages | Where-Object { $_.name -eq 'yanki' }).version
-          if ("v$surum" -ne $env:ETIKET) { throw "Etiket $env:ETIKET, Cargo.toml surumu $surum: eslesmiyor" }
+          if ("v$surum" -ne $env:ETIKET) { throw "Etiket $env:ETIKET, Cargo.toml surumu ${surum}: eslesmiyor" }
           Write-Host "Surum: $surum"
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "surum=$surum`n")
 
