@@ -51,6 +51,8 @@ pub enum Is {
     Surdur,
     /// Kurtarma işaretini sil (kapalılığın sahibi artık başka bir komut).
     IsaretSil,
+    /// Kapatma adaylarını önceden oku (yalnız okur): sayaç bitince kapatma gecikmesin.
+    Hazirla,
     /// FC bit 0x08: monitör kendini karattı mı? `nesil` sonuçla birlikte geri verilir.
     SensorOku { nesil: u64 },
     /// Medya çalıyor mu (önbelleğe yazılır; sonuç yine de bildirilir).
@@ -464,6 +466,11 @@ fn calis(ctx: Baglam, rx: Receiver<Is>) {
                 ctx.bildir(Sonuc::Acildi { kimlik, sonuc: r });
             }
             Is::Surdur => medya_surdur(&ctx, &mut duraklatilan),
+            Is::Hazirla => {
+                if let Err(h) = aygit().and_then(|a| ddc::kapatma_hazirla(&a)) {
+                    gunluk::yaz(&format!("yakınlık: kapatma hazırlığı yapılamadı: {h}"));
+                }
+            }
             Is::IsaretSil => {
                 if !ctx.kuru {
                     isaret_sil(&ctx.isaret);

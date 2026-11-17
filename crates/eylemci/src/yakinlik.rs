@@ -205,6 +205,44 @@ pub struct KapatSonucu {
     pub sonuc: Result<(), String>,
 }
 
+/// Son okunan kapatma adayları (aygıt adı, değerler). Yetenek dizesi okuması 1-2 sn sürer ve
+/// monitörün değeri değişmez; her kapatmada yeniden okumak sayaç bitişi ile kararma arasına
+/// gecikme ekliyordu. Aygıt adı değişirse (yeniden numaralama) yeniden okunur. Yalnız gerçekten
+/// okunmuş yetenek dizesinden çıkan, boş olmayan sonuç saklanır; kapatma başarısız olursa silinir.
+/// Anahtar aygıt adıdır: bu önbellek YALNIZ XG27 yolunda (`xg27_bul` ile EDID doğrulanmış ad) kullanılır.
+static ADAY_ONBELLEGI: std::sync::Mutex<Option<(String, Vec<u32>)>> = std::sync::Mutex::new(None);
+
+fn onbellegi_temizle() {
+    *ADAY_ONBELLEGI.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+fn kapatma_adaylari_al(aygit_adi: &str, hmon: windows::Win32::Graphics::Gdi::HMONITOR) -> Vec<u32> {
+    if let Some((ad, a)) = ADAY_ONBELLEGI.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if ad == aygit_adi {
+            return a.clone();
+        }
+    }
+    let (adaylar, okundu) = ekran::monitor_kapatma_adaylari_okunan(hmon);
+    if okundu && !adaylar.is_empty() {
+        *ADAY_ONBELLEGI.lock().unwrap_or_else(|e| e.into_inner()) = Some((aygit_adi.to_string(), adaylar.clone()));
+    }
+    adaylar
+}
+
+/// Kapatma adaylarını önceden okuyup önbelleğe alır (yalnız okur). Sayaç başlarken çağrılırsa
+/// sayaç bitince kapatma yetenek okumasını beklemez.
+pub fn kapatma_hazirla(aygit_adi: &str) -> Result<(), String> {
+    let hmon = {
+        let _kilit = ekran::ddc_kilidi();
+        ekran::hmonitor_bul(aygit_adi)?
+    };
+    if kapatma_adaylari_al(aygit_adi, hmon).is_empty() {
+        Err("monitör DDC/CI ile kapatmayı desteklemiyor".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// YALNIZ bu aygıtı DDC güç kipiyle kapatır (VCP 0xD6, mevcut `kapatma_adaylari` mantığıyla).
 /// Diğer monitörlere dokunulmaz. `iptal`, ilk yazmadan HEMEN ÖNCE (yetenek okuması vb. bittikten
 /// sonra) bir kez sorulur; true dönerse hiçbir şey yazılmaz (`iptal_edildi`). Kurtarma kaydı
@@ -217,7 +255,7 @@ pub fn tek_ekran_kapat(aygit_adi: &str, iptal: &dyn Fn() -> bool) -> KapatSonucu
             Err(e) => return KapatSonucu { yazildi: false, iptal_edildi: false, sonuc: Err(e) },
         }
     };
-    let adaylar = ekran::monitor_kapatma_adaylari(hmon);
+    let adaylar = kapatma_adaylari_al(aygit_adi, hmon);
     let mut iptal_edildi = false;
     let r = ekran::ddc_kapat(hmon, &adaylar, &mut || {
         if iptal() {
@@ -227,6 +265,10 @@ pub fn tek_ekran_kapat(aygit_adi: &str, iptal: &dyn Fn() -> bool) -> KapatSonucu
             Ok(())
         }
     });
+    if r.sonuc.is_err() && !iptal_edildi {
+        // Adaylar işe yaramadıysa bir sonraki kapatma yetenek dizesini yeniden okusun.
+        onbellegi_temizle();
+    }
     KapatSonucu { yazildi: r.yazildi, iptal_edildi, sonuc: r.sonuc }
 }
 

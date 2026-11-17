@@ -175,9 +175,15 @@ fn yetenek_dizesi(h: HANDLE) -> Option<String> {
 
 /// Bir monitörün (ilk okunabilen fiziksel monitörünün) kapatma adaylarını DDC'den okur.
 pub(crate) fn monitor_kapatma_adaylari(hmon: HMONITOR) -> Vec<u32> {
+    monitor_kapatma_adaylari_okunan(hmon).0
+}
+
+/// `monitor_kapatma_adaylari` ve yetenek dizesinin gerçekten okunup okunmadığı. Okunamadıysa
+/// adaylar varsayılandır (önbelleğe alınmamalı: geçici bir okuma hatası kalıcı olmasın).
+pub(crate) fn monitor_kapatma_adaylari_okunan(hmon: HMONITOR) -> (Vec<u32>, bool) {
     let _kilit = ddc_kilidi();
     let yetenek = Fiziksel::al(hmon).ok().and_then(|f| f.tutamaclar().into_iter().find_map(yetenek_dizesi));
-    kapatma_adaylari(yetenek.as_deref())
+    (kapatma_adaylari(yetenek.as_deref()), yetenek.is_some())
 }
 
 /// `MONITORINFOF_PRIMARY` (Gdi sabiti özellik adlarına bağlı olmasın diye yerel).

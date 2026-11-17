@@ -362,6 +362,8 @@ impl YakinlikYonetici {
                 self.karsilama = None;
                 self.tik_sayisi = 0;
                 gunluk::yaz(&format!("yakınlık: sayaç başladı ({sn} sn)"));
+                // Sayaç sürerken kapatma adaylarını ön belleğe al (ilk seferde yetenek okuması ~1-2 sn).
+                self.is_gonder(Is::Hazirla);
             }
             Err(h) => {
                 // Sayaç görünmüyorsa ekran KAPATILMAZ: makine "etkinlik var" sayılıp baştan bekler.
