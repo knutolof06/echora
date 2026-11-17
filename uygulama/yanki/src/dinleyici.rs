@@ -43,6 +43,11 @@ const ALKIS_KAPALI: u32 = u32::MAX;
 /// alkışın kendisinin açtığı kısa bölüt alkış algılamayı engellemesin.
 const KONUSMA_PARCA_ESIGI: u32 = 6;
 
+/// Yakınlığa konuşma bildirimi en çok bu aralıkla gider.
+const YAKINLIK_KONUSMA_ARALIGI: Duration = Duration::from_secs(1);
+/// Yakınlık sayacı sürerken alkış algılayıcısı alkış özelliği kapalıyken bu hassasiyetle çalışır.
+const YAKINLIK_ALKIS_HASSASIYETI: f32 = 0.6;
+
 /// Dinleme durumu (tepsi ipucu ve simgesi buna göre).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Durum {
@@ -74,6 +79,12 @@ pub enum UiIleti {
     Komut { komut: Komut, olusma: Instant, pencere: Option<u64> },
     /// Çift alkış algılandı (soğuma ve engeller dinleyicide uygulandı).
     Alkis { olusma: Instant },
+    /// Mikrofonda konuşma başladı (yakınlık için "kullanıcı burada" sinyali; en çok saniyede bir).
+    /// Yalnız `[yakinlik]` açık ve `mikrofon = true` iken gönderilir.
+    Konusma,
+    /// Yakınlık sayacı sürerken çift alkış algılandı: YALNIZ sayacı iptal eder, komut çalıştırmaz
+    /// (alkış özelliği kapalıyken de gelir; soğuma/engel denetimi uygulanmaz).
+    YakinlikIptal,
     /// Tuş penceresi (nesil) dinleyicide kapandı ama komut UI'ya gitmedi (yineleme koruması
     /// reddetti): UI da penceresini ve ipucunu kapatsın.
     PencereKapandi(u64),
@@ -174,6 +185,9 @@ enum Ileti {
     TusPenceresi(Option<u64>),
     /// Yakalama geri çağrısındaki algılayıcı çift alkış buldu (nesil).
     Alkis(u64),
+    /// VAD konuşma başlangıcı gördü ama bölütler iletilmiyor (tuşla kipinde pencere kapalı): yalnız
+    /// yakınlık için hafif "kullanıcı burada" iletisi (nesil). Parça kopyası YOK.
+    Varlik(u64),
     Dur,
 }
 
@@ -218,6 +232,8 @@ pub struct Girdi {
     pub anlasilmayanlar_yolu: PathBuf,
     /// UI: bir ekran DDC/CI ile kapalı (tam ekran engeli uygulanmaz).
     pub ddc_kapali: Arc<AtomicBool>,
+    /// UI: yakınlık geri sayımı sürüyor (alkış özelliği kapalıyken de çift alkış iptal sayılır).
+    pub yakinlik_sayac: Arc<AtomicBool>,
 }
 
 /// Aynı anda en çok bir iş. Çalışırken gelen istekler tek bekleyen yuvasında birleşir (en sonuncusu
@@ -257,6 +273,16 @@ impl<T> TekCalisan<T> {
 /// Saf karar: son çift alkıştan bu yana `ALKIS_SOGUMA` geçti mi?
 pub fn alkis_izinli(son: Option<Instant>, simdi: Instant) -> bool {
     son.is_none_or(|an| simdi.saturating_duration_since(an) >= ALKIS_SOGUMA)
+}
+
+/// Algılayıcının o anki değeri: ayar kapalıyken yakınlık sayacı sürüyorsa sabit hassasiyetle açık,
+/// aksi halde ayardaki değer.
+fn etkin_alkis_bitleri(ayar_bitleri: u32, sayac_suruyor: bool) -> u32 {
+    if ayar_bitleri == ALKIS_KAPALI && sayac_suruyor {
+        YAKINLIK_ALKIS_HASSASIYETI.to_bits()
+    } else {
+        ayar_bitleri
+    }
 }
 
 /// Paylaşılan alkış değeri: kapalıysa `ALKIS_KAPALI`, açıksa hassasiyetin bitleri.
@@ -351,9 +377,15 @@ struct Dinleyici {
     /// Yakalama geri çağrısındaki alkış algılayıcısının ayarı (bkz. `alkis_degeri`).
     alkis: Arc<AtomicU32>,
     son_alkis: Option<Instant>,
+    /// Yakınlığa en son iletilen konuşma (saniyede bir sınır).
+    son_yakinlik_konusma: Option<Instant>,
     /// Yakalama geri çağrısı konuşma bölütlerini kanala göndersin mi? Tuşla kipinde pencere
     /// kapalıyken hayır: parçalar hiç kopyalanıp gönderilmez (yalnız VAD ve alkış çalışır).
     parca_izni: Arc<AtomicBool>,
+    /// UI'nın yakınlık geri sayımı bayrağı (bkz. `Girdi::yakinlik_sayac`).
+    yak_sayac: Arc<AtomicBool>,
+    /// `[yakinlik] acik && mikrofon`: VAD konuşma başlangıcı bölütler iletilmese de bildirilir.
+    yak_mikrofon: Arc<AtomicBool>,
 }
 
 impl Dinleyici {
@@ -381,7 +413,10 @@ impl Dinleyici {
             pencere: None,
             alkis: Arc::new(AtomicU32::new(ALKIS_KAPALI)),
             son_alkis: None,
+            son_yakinlik_konusma: None,
             parca_izni: Arc::new(AtomicBool::new(true)),
+            yak_sayac: girdi.yakinlik_sayac,
+            yak_mikrofon: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -389,6 +424,19 @@ impl Dinleyici {
     fn parca_izni_guncelle(&self) {
         let izin = konusma_karari(self.ayarlar.dinleme_kipi, self.pencere.is_some()) != KonusmaKarari::Yoksay;
         self.parca_izni.store(izin, Ordering::Relaxed);
+        let y = &self.ayarlar.yakinlik;
+        self.yak_mikrofon.store(y.acik && y.mikrofon, Ordering::Relaxed);
+    }
+
+    /// Yakınlığa "konuşma başladı" iletir (en çok saniyede bir).
+    fn yakinlik_konusma_bildir(&mut self) {
+        if self.ayarlar.yakinlik.acik
+            && self.ayarlar.yakinlik.mikrofon
+            && self.son_yakinlik_konusma.is_none_or(|s| s.elapsed() >= YAKINLIK_KONUSMA_ARALIGI)
+        {
+            self.son_yakinlik_konusma = Some(Instant::now());
+            self.ui.gonder(UiIleti::Konusma);
+        }
     }
 
     fn durum_bildir(&mut self, d: Durum) {
@@ -444,6 +492,10 @@ impl Dinleyici {
         let alkis_ayari = Arc::clone(&self.alkis);
         self.parca_izni_guncelle();
         let parca_izni = Arc::clone(&self.parca_izni);
+        let yak_sayac = Arc::clone(&self.yak_sayac);
+        let yak_mikrofon = Arc::clone(&self.yak_mikrofon);
+        // Hafif varlık iletisinin saniyede bir sınırı (geri çağrı iş parçacığında).
+        let mut son_varlik: Option<Instant> = None;
         // Bölüt başında verilen karar bölüt boyunca geçerli (pencere ortada kapanırsa konuşma kesilmez).
         let mut bolut_gonder = true;
         let mut alkis_bitleri = ALKIS_KAPALI;
@@ -460,6 +512,15 @@ impl Dinleyici {
             bolutleyici.isle(parca, &mut |olay| {
                 if matches!(olay, Olay::KonusmaBasladi) {
                     *gonder = izin.load(Ordering::Relaxed);
+                    // Bölütler iletilmiyorsa (tuşla kipi, pencere kapalı) yakınlık için yine de hafif bir
+                    // varlık iletisi: parça kopyası yok, en çok saniyede bir.
+                    if !*gonder
+                        && yak_mikrofon.load(Ordering::Relaxed)
+                        && son_varlik.is_none_or(|s| s.elapsed() >= YAKINLIK_KONUSMA_ARALIGI)
+                    {
+                        son_varlik = Some(Instant::now());
+                        let _ = tx_bolut.send(Ileti::Varlik(nesil));
+                    }
                 }
                 if !*gonder {
                     return;
@@ -477,7 +538,9 @@ impl Dinleyici {
                 let _ = tx_bolut.send(ileti);
             });
             // Çift alkış: yalnız ayarda açıkken; akan parça üstünde ucuz, bellek ayırmayan hesap.
-            let bitler = alkis_ayari.load(Ordering::Relaxed);
+            // Yakınlık geri sayımı sürerken alkış özelliği kapalı olsa da algılayıcı (yalnız iptal için)
+            // çalışır; sayaç dışında boşta ek maliyet yok.
+            let bitler = etkin_alkis_bitleri(alkis_ayari.load(Ordering::Relaxed), yak_sayac.load(Ordering::Relaxed));
             if bitler != alkis_bitleri {
                 if alkis_bitleri == ALKIS_KAPALI {
                     alkis = AlkisAlgilayici::new(f32::from_bits(bitler));
@@ -657,7 +720,16 @@ impl Dinleyici {
                     self.parca_izni_guncelle();
                 }
                 Some(Ileti::Alkis(n)) => {
-                    if n != self.nesil || self.duraklatildi || !self.ayarlar.alkis.acik {
+                    if n != self.nesil {
+                        continue;
+                    }
+                    // Yakınlık sayacı sürerken alkış YALNIZ iptaldir: sessiz saat/tam ekran engelinden,
+                    // soğumadan ve alkış ayarından önce iletilir, komut çalıştırmaz.
+                    if self.yak_sayac.load(Ordering::Relaxed) {
+                        self.ui.gonder(UiIleti::YakinlikIptal);
+                        continue;
+                    }
+                    if self.duraklatildi || !self.ayarlar.alkis.acik {
                         continue;
                     }
                     // Alkış da mikrofondan gelir: sessiz saat / tam ekran engeli uygulanır.
@@ -672,10 +744,20 @@ impl Dinleyici {
                     self.son_alkis = Some(simdi);
                     self.ui.gonder(UiIleti::Alkis { olusma: simdi });
                 }
+                Some(Ileti::Varlik(n)) => {
+                    if n == self.nesil && !self.duraklatildi {
+                        self.yakinlik_konusma_bildir();
+                    }
+                }
                 Some(Ileti::Basladi(n)) => {
                     if n != self.nesil || self.duraklatildi {
                         continue;
                     }
+                    // Yakınlık: konuşma "kullanıcı burada" sinyalidir. Yalnız VAD'in gördüğü konuşma
+                    // gelir: dinleme duraklatılmışken mikrofon kapalıdır (VAD çalışmaz), tuşla kipinde
+                    // pencere dışı konuşma da hiç iletilmez; bu durumlarda mikrofon sinyali yok sayılır.
+                    // Sessiz saat / tam ekran engelinden ÖNCE: engel komutu değil, varlığı etkiler.
+                    self.yakinlik_konusma_bildir();
                     // Tuşla kipinde pencere dışı konuşma tümden atılır (model yüklenmez).
                     let karar = konusma_karari(self.ayarlar.dinleme_kipi, self.pencere.is_some());
                     if karar == KonusmaKarari::Yoksay {
@@ -960,6 +1042,15 @@ mod testler {
         assert!(alkis_izinli(Some(t), t + ALKIS_SOGUMA));
         // Saat geriye (sıra dışı an) izin verir sayılmaz: doyurmalı çıkarma 0 verir.
         assert!(!alkis_izinli(Some(t + Duration::from_secs(5)), t));
+    }
+
+    #[test]
+    fn alkis_sayac_surerken_ayar_kapaliyken_de_calisir() {
+        // Ayar kapali + sayac yok: kapali. Ayar kapali + sayac var: 0.6. Ayar acik: ayardaki deger.
+        assert_eq!(etkin_alkis_bitleri(ALKIS_KAPALI, false), ALKIS_KAPALI);
+        assert_eq!(f32::from_bits(etkin_alkis_bitleri(ALKIS_KAPALI, true)), 0.6);
+        assert_eq!(etkin_alkis_bitleri(0.9f32.to_bits(), true), 0.9f32.to_bits());
+        assert_eq!(etkin_alkis_bitleri(0.9f32.to_bits(), false), 0.9f32.to_bits());
     }
 
     #[test]

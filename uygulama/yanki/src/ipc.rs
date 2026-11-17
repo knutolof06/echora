@@ -8,11 +8,13 @@
 
 use komut::{turkce_kucuk, Ayarlar, Komut};
 
-pub use studyo::ipc::{GUNCELLEME_DENETLE, GUNCELLEME_KUR, KOMUT_CALISTIR, YENIDEN_YUKLE};
+pub use studyo::ipc::{GUNCELLEME_DENETLE, GUNCELLEME_KUR, KOMUT_CALISTIR, YAKINLIK_ONIZLE, YENIDEN_YUKLE};
 
 // Sözleşme (plan, madde 9): 1 = komut çalıştır, 2 = yeniden yükle; 3 = güncellemeleri denetle,
-// 4 = hazır güncellemeyi kur (onay tepsi sürecinin kutusunda).
-const _: () = assert!(KOMUT_CALISTIR == 1 && YENIDEN_YUKLE == 2 && GUNCELLEME_DENETLE == 3 && GUNCELLEME_KUR == 4);
+// 4 = hazır güncellemeyi kur (onay tepsi sürecinin kutusunda); 5 = yakınlık sayacını önizle.
+const _: () = assert!(
+    KOMUT_CALISTIR == 1 && YENIDEN_YUKLE == 2 && GUNCELLEME_DENETLE == 3 && GUNCELLEME_KUR == 4 && YAKINLIK_ONIZLE == 5
+);
 
 /// Kabul edilen en büyük yük.
 pub const EN_COK_BAYT: usize = 4096;
@@ -25,6 +27,8 @@ pub enum IpcIstegi {
     GuncellemeDenetle,
     /// Hazır güncellemeyi kur (onayı tepsi süreci kendi kutusunda sorar).
     GuncellemeKur,
+    /// Yakınlık sayacını XG27UCDMG köşesinde önizle (monitör kapatılmaz).
+    YakinlikOnizle,
 }
 
 /// `dwData` ve yük baytlarını çözer. Hata metni yükü İÇERMEZ.
@@ -44,6 +48,7 @@ pub fn coz(tur: usize, veri: &[u8]) -> Result<IpcIstegi, String> {
         YENIDEN_YUKLE => Ok(IpcIstegi::YenidenYukle),
         GUNCELLEME_DENETLE => Ok(IpcIstegi::GuncellemeDenetle),
         GUNCELLEME_KUR => Ok(IpcIstegi::GuncellemeKur),
+        YAKINLIK_ONIZLE => Ok(IpcIstegi::YakinlikOnizle),
         _ => Err(format!("bilinmeyen ileti türü {tur}")),
     }
 }
@@ -76,7 +81,8 @@ mod testler {
         assert_eq!(coz(2, &[]), Ok(IpcIstegi::YenidenYukle));
         assert_eq!(coz(3, &[]), Ok(IpcIstegi::GuncellemeDenetle));
         assert_eq!(coz(4, &[]), Ok(IpcIstegi::GuncellemeKur));
-        assert!(coz(5, &[]).is_err());
+        assert_eq!(coz(5, &[]), Ok(IpcIstegi::YakinlikOnizle));
+        assert!(coz(6, &[]).is_err());
     }
 
     #[test]
@@ -100,7 +106,7 @@ mod testler {
 
     #[test]
     fn bilinmeyen_tur_reddedilir_ve_hata_yuku_icermez() {
-        let h = coz(7, b"gizli").unwrap_err();
+        let h = coz(9, b"gizli").unwrap_err();
         assert!(!h.contains("gizli"));
         let h = coz(1, b"qxqx\xFF").unwrap_err();
         assert!(!h.contains("qxqx"));

@@ -1,6 +1,7 @@
 //! Monitör sorguları ve DDC/CI güç kipi (VCP 0xD6) okuma/yazma.
 
 use std::mem::size_of;
+use std::sync::{Mutex, MutexGuard};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -15,6 +16,61 @@ use windows::Win32::Foundation::{HANDLE, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
+
+/// Süreç içi tek DDC/CI kilidi: DDC/CI I2C hattı üzerinde çalışır ve eşzamanlı konuşmalar
+/// birbirini bozar. Bu crate'teki TÜM DDC okuma/yazma giriş noktaları (güç kipi, yetenek dizesi,
+/// yakınlık sensörü) bu kilidi tutar. Kilidi tutarken başka kilit BEKLEMEYİN; kilit giriş
+/// noktalarında alınır, iç yardımcılar (`guc_oku`, `vcp_oku`...) kilitsizdir, iç içe çağrılmaz.
+static DDC_KILIDI: Mutex<()> = Mutex::new(());
+
+/// Süreçler arası DDC kilidinin adı: Echora (arka plan) ile Stüdyo ayrı süreçlerdir ama aynı
+/// I2C hattını kullanır. Oturum yereldir (`Local\`); iki süreç de kullanıcının oturumundadır.
+const SISTEM_KILIDI_ADI: windows::core::PCWSTR = windows::core::w!("Local\\Echora.DDC");
+/// Süreçler arası kilit için en uzun bekleme. Dolarsa yine de devam edilir (kilitlenme yerine
+/// nadir bir çakışma riski kabul edilir; süreç içi kilit her zaman tutulur).
+const SISTEM_KILIDI_BEKLEME_MS: u32 = 5000;
+
+/// Süreç içi + süreçler arası DDC kilidi. Drop'ta ikisi de bırakılır. `Send` değildir: adlı
+/// mutex onu bekleyen iş parçacığına aittir ve aynı iş parçacığında bırakılmalıdır.
+pub(crate) struct DdcKilidi {
+    _ic: MutexGuard<'static, ()>,
+    sistem: Option<HANDLE>,
+}
+
+impl Drop for DdcKilidi {
+    fn drop(&mut self) {
+        if let Some(h) = self.sistem {
+            // SAFETY: h bu iş parçacığının beklediği (sahip olduğu) adlı mutex.
+            let _ = unsafe { windows::Win32::System::Threading::ReleaseMutex(h) };
+        }
+    }
+}
+
+/// Adlı mutex tutamacı (süreç boyunca açık kalır); oluşturulamazsa None.
+fn sistem_kilidi() -> Option<HANDLE> {
+    static TUTAMAC: std::sync::OnceLock<Option<isize>> = std::sync::OnceLock::new();
+    let h = (*TUTAMAC.get_or_init(|| {
+        // SAFETY: sabit, NUL sonlu ad; varsayılan güvenlik; ilk sahiplik istenmez.
+        unsafe { windows::Win32::System::Threading::CreateMutexW(None, false, SISTEM_KILIDI_ADI) }
+            .ok()
+            .map(|h| h.0 as isize)
+    }))?;
+    Some(HANDLE(h as *mut _))
+}
+
+/// DDC kilidini alır; zehirlenmişse (tutan iş parçacığı panik etti) kilidi kurtarır. Önce süreç
+/// içi kilit, sonra süreçler arası adlı mutex (en çok `SISTEM_KILIDI_BEKLEME_MS`; terk edilmiş
+/// mutex, sahibi öldüğü için, alınmış sayılır).
+pub(crate) fn ddc_kilidi() -> DdcKilidi {
+    use windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
+    let ic = DDC_KILIDI.lock().unwrap_or_else(|e| e.into_inner());
+    let sistem = sistem_kilidi().filter(|&h| {
+        // SAFETY: h geçerli adlı mutex tutamacı.
+        let r = unsafe { windows::Win32::System::Threading::WaitForSingleObject(h, SISTEM_KILIDI_BEKLEME_MS) };
+        r == WAIT_OBJECT_0 || r == WAIT_ABANDONED
+    });
+    DdcKilidi { _ic: ic, sistem }
+}
 
 /// VCP kodu: güç kipi. Değerler: 1 = açık, 4 = bekleme (DPM kapalı), 5 = kapalı (güç düğmesine
 /// basılmış gibi).
@@ -119,6 +175,7 @@ fn yetenek_dizesi(h: HANDLE) -> Option<String> {
 
 /// Bir monitörün (ilk okunabilen fiziksel monitörünün) kapatma adaylarını DDC'den okur.
 pub(crate) fn monitor_kapatma_adaylari(hmon: HMONITOR) -> Vec<u32> {
+    let _kilit = ddc_kilidi();
     let yetenek = Fiziksel::al(hmon).ok().and_then(|f| f.tutamaclar().into_iter().find_map(yetenek_dizesi));
     kapatma_adaylari(yetenek.as_deref())
 }
@@ -249,10 +306,10 @@ pub fn ekranlari_listele() -> Vec<EkranBilgisi> {
 // ---------------------------------------------------------------------------
 
 /// Bir HMONITOR'a bağlı fiziksel monitör tutamaçları; düşerken `DestroyPhysicalMonitors`.
-struct Fiziksel(Vec<PHYSICAL_MONITOR>);
+pub(crate) struct Fiziksel(Vec<PHYSICAL_MONITOR>);
 
 impl Fiziksel {
-    fn al(hmon: HMONITOR) -> Result<Self, String> {
+    pub(crate) fn al(hmon: HMONITOR) -> Result<Self, String> {
         let mut sayi = 0u32;
         // SAFETY: sayi geçerli bir çıktı işaretçisidir.
         unsafe { GetNumberOfPhysicalMonitorsFromHMONITOR(hmon, &mut sayi) }
@@ -267,7 +324,7 @@ impl Fiziksel {
         Ok(Fiziksel(dizi))
     }
 
-    fn tutamaclar(&self) -> Vec<HANDLE> {
+    pub(crate) fn tutamaclar(&self) -> Vec<HANDLE> {
         // Alan packed(1); değer olarak kopyalanır, başvuru alınmaz.
         self.0.iter().map(|p| p.hPhysicalMonitor).collect()
     }
@@ -279,6 +336,30 @@ impl Drop for Fiziksel {
         unsafe {
             let _ = DestroyPhysicalMonitors(&self.0);
         }
+    }
+}
+
+/// Rastgele bir VCP kodunun şimdiki değerini okur. KİLİTSİZDİR: çağıran `ddc_kilidi()` tutmalı.
+pub(crate) fn vcp_oku(h: HANDLE, kod: u8) -> Result<u32, String> {
+    let mut simdiki = 0u32;
+    let mut en_buyuk = 0u32;
+    // SAFETY: h geçerli fiziksel monitör tutamacı; iki çıktı işaretçisi de geçerli.
+    let r = unsafe { GetVCPFeatureAndVCPFeatureReply(h, kod, None, &mut simdiki, Some(&mut en_buyuk)) };
+    if r != 0 {
+        Ok(simdiki)
+    } else {
+        Err(format!("DDC/CI VCP 0x{kod:02X} okunamadı"))
+    }
+}
+
+/// Rastgele bir VCP koduna değer yazar. KİLİTSİZDİR: çağıran `ddc_kilidi()` tutmalı.
+pub(crate) fn vcp_yaz(h: HANDLE, kod: u8, deger: u32) -> Result<(), String> {
+    // SAFETY: h geçerli fiziksel monitör tutamacı.
+    let r = unsafe { SetVCPFeature(h, kod, deger) };
+    if r != 0 {
+        Ok(())
+    } else {
+        Err(format!("DDC/CI VCP 0x{kod:02X} yazılamadı"))
     }
 }
 
@@ -307,7 +388,7 @@ fn guc_yaz(h: HANDLE, deger: u32) -> Result<(), String> {
     }
 }
 
-fn hmonitor_bul(aygit_adi: &str) -> Result<HMONITOR, String> {
+pub(crate) fn hmonitor_bul(aygit_adi: &str) -> Result<HMONITOR, String> {
     monitorleri_bul()
         .into_iter()
         .find(|m| m.bilgi.aygit_adi == aygit_adi)
@@ -317,6 +398,7 @@ fn hmonitor_bul(aygit_adi: &str) -> Result<HMONITOR, String> {
 
 /// DDC/CI güç kipi (VCP 0xD6) OKUNABİLİYOR mu ve şu anki değeri. Yalnız okur, yazmaz.
 pub fn ddc_guc_durumu(aygit_adi: &str) -> Result<u32, String> {
+    let _kilit = ddc_kilidi();
     let hmon = hmonitor_bul(aygit_adi)?;
     let fiziksel = Fiziksel::al(hmon)?;
     let mut son_hata = "DDC/CI güç kipi okunamadı".to_string();
@@ -369,6 +451,8 @@ pub(crate) fn ddc_kapat(
     adaylar: &[u32],
     kayit_oncesi: &mut dyn FnMut() -> Result<(), String>,
 ) -> DdcKapatSonucu {
+    // Kilit tüm yazma + doğrulama süresince (~1,2 sn) tutulur; `kayit_oncesi` DDC'ye dokunmaz.
+    let _kilit = ddc_kilidi();
     let basarisiz = |yazildi, e: String| DdcKapatSonucu { yazildi, sonuc: Err(e), hepsi_yok_sayildi: false, kullanilan: None };
     if adaylar.is_empty() {
         return basarisiz(false, "monitör DDC/CI ile kapatmayı desteklemiyor (yetenek listesinde 4 ya da 5 yok)".into());
@@ -442,6 +526,7 @@ fn kapandi_mi(h: HANDLE) -> bool {
 /// Monitöre güç açık (VCP 0xD6 = 1) yazar; yalnız yazma sonucuna bakar.
 /// En az bir fiziksel monitöre yazılabildiyse Ok.
 pub(crate) fn ddc_ac_yaz(hmon: HMONITOR) -> Result<(), String> {
+    let _kilit = ddc_kilidi();
     let fiziksel = Fiziksel::al(hmon)?;
     let mut son_hata = "DDC/CI ile konuşulamadı".to_string();
     let mut basarili = false;
@@ -461,6 +546,7 @@ pub(crate) fn ddc_ac_yaz(hmon: HMONITOR) -> Result<(), String> {
 /// Açma doğrulaması: D6 okunur, 1 ise Ok. Yanıtsız ya da başka değer: Err
 /// (açık monitör yanıt verir; doğrulanamayan monitör açılmış sayılmaz).
 pub(crate) fn ddc_acik_dogrula(hmon: HMONITOR) -> Result<(), String> {
+    let _kilit = ddc_kilidi();
     let fiziksel = Fiziksel::al(hmon)?;
     let mut son_hata = "DDC/CI güç kipi okunamadı".to_string();
     for h in fiziksel.tutamaclar() {

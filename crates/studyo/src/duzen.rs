@@ -587,6 +587,8 @@ pub enum HataYeri {
     Efekt,
     /// Kısayollar, dinleme kipi, palet tuşu, çift alkış.
     Kisayol,
+    /// `[yakinlik]` bölümü (süre aralıkları, karşılama efekti).
+    Yakinlik,
     Genel,
 }
 
@@ -623,6 +625,9 @@ pub fn hata_yeri(ileti: &str) -> HataYeri {
         ["kisayol #", "kısayol", "dinleme_kipi", "dinleme_tusu", "dinleme_suresi", "palet_tusu", "alkis"];
     if KISAYOL_ONEKLERI.iter().any(|o| ileti.starts_with(o)) {
         return HataYeri::Kisayol;
+    }
+    if ileti.starts_with("yakinlik") {
+        return HataYeri::Yakinlik;
     }
     HataYeri::Genel
 }
@@ -1119,6 +1124,7 @@ mod testler {
         assert_eq!(hata_yeri("uygulama \"krom\": hedef boş olamaz"), HataYeri::Uygulama("krom".into()));
         assert_eq!(hata_yeri("yinelenen ifade \"a\": komut #1 ifadesi \"a\" ile komut #4 ifadesi \"a\""), HataYeri::Komut(3));
         assert_eq!(hata_yeri("efektler.portal: sure_ms"), HataYeri::Efekt);
+        assert_eq!(hata_yeri("yakinlik.bekleme_sn 30 ile 3600 arasında olmalı: 5"), HataYeri::Yakinlik);
         assert_eq!(hata_yeri("tetik kelimesi boş olamaz"), HataYeri::Genel);
     }
 

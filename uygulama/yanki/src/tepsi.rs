@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use eylemci::{yakinlik as ddc, EkranBilgisi};
 use komut::efekt::{Efekt, EfektAyari, Olay};
 use komut::{Ayarlar, Komut};
 use sahne::{Hedef, Istek, Sahne};
@@ -42,8 +43,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR,
     MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE,
     WM_APP, WM_COPYDATA, WM_DESTROY, WM_ENDSESSION, WM_LBUTTONUP, WM_NULL, WM_QUERYENDSESSION, WM_RBUTTONUP,
-    WM_TIMER, WNDCLASSW, WS_OVERLAPPED, EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PBT_APMRESUMEAUTOMATIC,
-    WM_CLOSE, WM_HOTKEY, WM_POWERBROADCAST,
+    WM_TIMER, WNDCLASSW, WS_OVERLAPPED, EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND,
+    WM_CLOSE, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_HOTKEY, WM_INPUT, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE,
 };
 
 use crate::dagitim::{
@@ -59,6 +60,7 @@ use crate::gunluk;
 use crate::ipc::{self, IpcIstegi};
 use crate::sahne_akisi::{SahneYurutucu, SiradakiAdim};
 use crate::sistem::SistemKutusu;
+use crate::yakinlik_yonetici::{Dis, YakinlikYonetici};
 
 /// Tepsi simgesinden gelen fare iletisi.
 const WM_TEPSI: u32 = WM_APP + 1;
@@ -74,6 +76,9 @@ const WM_IPC_KOMUT: u32 = WM_APP + 6;
 const WM_GUNCELLEME: u32 = WM_APP + 7;
 /// Onaylanmış güncellemeyi kur (Stüdyo IPC'si; `WM_COPYDATA` içinde pencere yok edilmesin diye ertelenir).
 const WM_GUNCELLEME_KUR: u32 = WM_APP + 8;
+
+/// Yakınlık çalışan iş parçacığından sonuç var (`Isci::sonuclari_al`).
+const WM_YAKINLIK_ISCI: u32 = WM_APP + 9;
 
 const SIMGE_NO: u32 = 1;
 const ZAMANLAYICI_SURE: usize = 1;
@@ -116,6 +121,7 @@ const KOMUT_GUNCELLEME_DENETLE: usize = 9;
 const KOMUT_GUNCELLEME_KUR: usize = 10;
 const KOMUT_ZAMANLAYICI_HEPSI: usize = 11;
 const KOMUT_PALET: usize = 12;
+const KOMUT_YAKINLIK: usize = 13;
 /// "Zamanlayıcılar" alt menüsündeki i. öğe: `KOMUT_ZAMANLAYICI_TABAN + i` (en çok `MENU_ZAMANLAYICI`).
 const KOMUT_ZAMANLAYICI_TABAN: usize = 100;
 const MENU_ZAMANLAYICI: usize = 20;
@@ -217,6 +223,8 @@ pub struct Uygulama {
     mesgul_kisayollar: Vec<String>,
     /// Tuşla kipinde dinleme tuşu kaydedilemedi: dinleyici geçici olarak sürekli kipte.
     dinleme_tusu_yok: bool,
+    /// Yakınlık yöneticisi (durum makinesi, sayaç penceresi, DDC/medya iş parçacığı, kaynaklar).
+    pub yakinlik: YakinlikYonetici,
 }
 
 /// Tepsi simgeleri: exe'ye gömülü `.ico` kaynaklarından, küçük simge boyutunda (DPI'ye göre)
@@ -262,9 +270,11 @@ impl Uygulama {
         ayar_arg: Option<PathBuf>,
         kuru: bool,
         guncelleme_klasoru: PathBuf,
+        yakinlik_isareti: PathBuf,
     ) -> Self {
         sistem.yontemleri_uygula(&[], &ayarlar.ekran_yontemleri);
         let imzaci = sistem.imzaci();
+        let ddc_kapali = Arc::new(AtomicBool::new(false));
         Uygulama {
             simgeler: Simgeler::yukle(),
             guncelleme_klasoru,
@@ -278,8 +288,9 @@ impl Uygulama {
             tus_penceresi: TusPenceresi::default(),
             mesgul_kisayollar: Vec::new(),
             dinleme_tusu_yok: false,
+            yakinlik: YakinlikYonetici::new(WM_YAKINLIK_ISCI, kuru, yakinlik_isareti, Arc::clone(&ddc_kapali)),
             imzaci,
-            ddc_kapali: Arc::new(AtomicBool::new(false)),
+            ddc_kapali,
             sahne_studyodan: false,
             oturum_bitiyor: false,
             sistem: Some(sistem),
@@ -549,6 +560,9 @@ fn menu_goster(hwnd: HWND) {
             (z.kimlik, genis(&format!("{} — {kalan} (iptal et)", z.gosterim)))
         })
         .collect();
+    // Yalnız XG27UCDMG bağlıyken görünür.
+    let yakinlik_gorunur = ddc::xg27_bul().is_some();
+    let yakinlik_acik = u.ayarlar.yakinlik.acik;
     let palet_metni = match &u.ayarlar.palet_tusu {
         Some(k) => format!("Komut paleti\t{}", kisayollar::gorunum(&k.metin)),
         None => "Komut paleti".to_string(),
@@ -572,6 +586,7 @@ fn menu_goster(hwnd: HWND) {
         let zm = genis("Zamanlayıcılar");
         let zh = genis("Tümünü iptal et");
         let pl = genis(&palet_metni);
+        let yk = genis("Yakınlık");
         let _ = AppendMenuW(menu, MF_STRING, KOMUT_DURAKLAT_SURDUR, PCWSTR(d.as_ptr()));
         if !zamanlar.is_empty() {
             if let Ok(alt) = CreatePopupMenu() {
@@ -588,6 +603,9 @@ fn menu_goster(hwnd: HWND) {
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, KOMUT_PALET, PCWSTR(pl.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, KOMUT_STUDYO, PCWSTR(s.as_ptr()));
+        if yakinlik_gorunur {
+            let _ = AppendMenuW(menu, MF_STRING | isaret(yakinlik_acik), KOMUT_YAKINLIK, PCWSTR(yk.as_ptr()));
+        }
         if let Ok(alt) = CreatePopupMenu() {
             let _ = AppendMenuW(alt, MF_STRING | isaret(efektler), KOMUT_EFEKTLER, PCWSTR(ef1.as_ptr()));
             let gri = if efektler { MENU_ITEM_FLAGS(0) } else { MF_GRAYED };
@@ -629,6 +647,7 @@ fn menu_goster(hwnd: HWND) {
         KOMUT_YENIDEN_YUKLE => ayarlari_yeniden_yukle(u, Kaynak::Kullanici),
         KOMUT_EFEKTLER => efekt_anahtari_degistir(u, EfektAnahtari::Hepsi),
         KOMUT_IPUCU_EFEKTLERI => efekt_anahtari_degistir(u, EfektAnahtari::Ipucu),
+        KOMUT_YAKINLIK => efekt_anahtari_degistir(u, EfektAnahtari::Yakinlik),
         KOMUT_GUNCELLEME_DENETLE => guncelleme_baslat(u, true),
         KOMUT_GUNCELLEME_KUR => {
             guncellemeyi_kur(hwnd);
@@ -698,6 +717,9 @@ fn cikis_hazirla(u: &mut Uygulama) {
     }
     u.kapaniyor = true;
     bekleyenleri_kes(u, "çıkılıyor");
+    // Monitörü biz kapattıysak açılır (eşzamanlı; normal çıkışta en çok 5 sn, oturum bitişinde 2 sn).
+    u.yakinlik.cikis(u.oturum_bitiyor);
+    yak_dis(u);
     u.ipc_kuyrugu.clear();
     u.tus_penceresi.hepsini_kapat();
     // Zamanlayıcılar kalıcı değildir: kapanınca kaybolur.
@@ -764,6 +786,7 @@ fn ayarlari_uygula(u: &mut Uygulama, a: Ayarlar) {
     }
     // Dinleme kipi / tuşu değişmiş olabilir.
     simge_guncelle(u);
+    yak_ayar_uygula(u);
 }
 
 // --- Tepsi menüsündeki efekt anahtarları ---
@@ -774,6 +797,8 @@ enum EfektAnahtari {
     Hepsi,
     /// `olay_efektleri_acik`
     Ipucu,
+    /// `[yakinlik] acik` (efekt değil; aynı "menü anahtarı → ayar dosyası" yolunu kullanır).
+    Yakinlik,
 }
 
 /// Anahtarı ayar dosyasında çevirir: dosya ham şemayla okunur, alan değiştirilir, doğrulanıp
@@ -798,6 +823,10 @@ fn efekt_anahtari_degistir(u: &mut Uygulama, anahtar: EfektAnahtari) {
         EfektAnahtari::Ipucu => {
             ham.olay_efektleri_acik = !u.ayarlar.olay_efektleri_acik;
             ("ipucu efektleri", ham.olay_efektleri_acik)
+        }
+        EfektAnahtari::Yakinlik => {
+            ham.yakinlik.acik = !u.ayarlar.yakinlik.acik;
+            ("yakınlık", ham.yakinlik.acik)
         }
     };
     let sonuc = dosya::yedek_al(&yol).and_then(|_| dosya::ayar_kaydet(&yol, &ham).map(drop));
@@ -1251,6 +1280,7 @@ fn eylemi_uygula(u: &mut Uygulama, eylem: &komut::Eylem, gosterim: &str, kaynak:
         }
     };
     ddc_bayragi(&u.ddc_kapali, eylem, &sonuc);
+    yak_eylem_sonrasi(u, eylem);
     if let Some(k) = sonuc.kayit {
         u.geri_al.ekle(gosterim, k);
     }
@@ -1304,6 +1334,7 @@ fn geri_al(u: &mut Uygulama, efekt: Option<(Efekt, EfektAyari, Option<String>)>)
         GeriAlSonucu::Yapildi(g) => {
             if ekran_acar {
                 u.ddc_kapali.store(false, Ordering::Relaxed);
+                yak_ekranlar_acildi(u);
             }
             gunluk::yaz(&format!("geri alındı: {g}"));
             if let Some(k) = zamanlayici {
@@ -1351,11 +1382,15 @@ fn sahne_ilerle(u: &mut Uygulama) {
             if let Ok(sonuc) = &r {
                 ddc_bayragi(&u.ddc_kapali, &e, sonuc);
             }
+            let basarili = r.is_ok();
             let etki = r.as_ref().ok().map(|s| s.etki.clone());
             if let Err(h) = &r {
                 gunluk::yaz(&format!("HATA: \"{}\" sahnesi, \"{}\" adımı: {h}", y.ad(), eylem_ozeti(&e)));
             }
             y.sonuc(r.map(|s| s.kayit));
+            if basarili {
+                yak_eylem_sonrasi(u, &e);
+            }
             // Sahnede kullanılabilen uygulama düzeyi eylemler.
             match etki {
                 Some(Etki::StudyoyuAc) => studyo_ac(u, true),
@@ -1508,6 +1543,12 @@ fn ipc_al(hwnd: HWND, lp: LPARAM) -> LRESULT {
                 LRESULT(0)
             }
         },
+        // Yalnız XG27UCDMG bağlıysa; sayaç köşede gösterilir, monitör kapatılmaz.
+        Ok(IpcIstegi::YakinlikOnizle) => {
+            let tamam = u.yakinlik.onizle();
+            yak_dis(u);
+            LRESULT(if tamam { 1 } else { 0 })
+        }
         Ok(IpcIstegi::Komut(ifade)) => {
             // Stüdyo kaydedip hemen "dene" dediyse dosya yüklenenden yenidir: önce yükle.
             if crate::izleyici::dosya_ozeti(&u.ayar_yolu) != u.son_ozet {
@@ -1836,6 +1877,63 @@ fn dolanlari_isle(u: &mut Uygulama, dolanlar: Vec<Zamanlayici>) -> bool {
     true
 }
 
+// --- Yakınlık (yalnız XG27UCDMG) ---
+//
+// Tüm orkestrasyon `crate::yakinlik_yonetici`dedir (durum makinesi `crate::yakinlik`te saftır). Burada
+// yalnız yöneticinin bıraktığı istekler (balon, karşılama efekti) uygulanır.
+
+/// Yöneticinin biriken isteklerini uygular.
+fn yak_dis(u: &mut Uygulama) {
+    for d in u.yakinlik.dis_al() {
+        match d {
+            Dis::Balon { baslik, metin, hata } => balon(u, &baslik, &metin, hata),
+            Dis::KarsilamaEfekti { ekran, efekt } => yak_karsilama_efekti(u, &ekran, efekt),
+        }
+    }
+}
+
+/// Karşılama efekti XG27UCDMG'de (efektler kapalıysa ya da bekleyen eylem varsa oynamaz).
+fn yak_karsilama_efekti(u: &mut Uygulama, ekran: &EkranBilgisi, e: Efekt) {
+    if !u.ayarlar.efekt_oynasin_mi() || u.bekleyen.is_some() {
+        return;
+    }
+    efekt_hatasini_denetle(u);
+    let ayar = u.ayarlar.efekt_ayari(e);
+    if u.kuru {
+        gunluk::yaz(&format!("[kuru] karşılama efekti başladı: {} ({} ms)", e.ad(), ayar.sure_ms));
+    }
+    let hedef = Hedef::Dikdortgen { sol: ekran.sol, ust: ekran.ust, genislik: ekran.genislik, yukseklik: ekran.yukseklik };
+    u.efekt.oynat(Istek { efekt: e, ayar, metin: None, hedef }, None);
+}
+
+/// Yönetici üzerinde bir işlem yapar, sonra yöneticinin isteklerini uygular.
+fn yak<R>(hwnd: HWND, f: impl FnOnce(&mut YakinlikYonetici) -> R) -> Option<R> {
+    let u = uyg(hwnd)?;
+    let r = f(&mut u.yakinlik);
+    yak_dis(u);
+    Some(r)
+}
+
+fn yak_ayar_uygula(u: &mut Uygulama) {
+    u.yakinlik.ayar_uygula(&u.ayarlar);
+    yak_dis(u);
+}
+
+fn yak_eylem_sonrasi(u: &mut Uygulama, eylem: &komut::Eylem) {
+    u.yakinlik.eylem_sonrasi(eylem);
+    yak_dis(u);
+}
+
+fn yak_ekranlar_acildi(u: &mut Uygulama) {
+    u.yakinlik.ekranlar_acildi();
+    yak_dis(u);
+}
+
+fn yak_etkinlik(u: &mut Uygulama) {
+    u.yakinlik.etkinlik();
+    yak_dis(u);
+}
+
 // --- Dinleyici iletileri ---
 
 /// `false` donerse kuyrugun kalani atilmalidir (cikis basladi).
@@ -1869,7 +1967,24 @@ fn ileti_isle(hwnd: HWND, ileti: UiIleti) -> bool {
             return komutu_baslat(u, komut, KomutKaynagi::Ses);
         }
         UiIleti::PencereKapandi(n) => tus_penceresi_kapat(u, Some(n), "komut yinelendi"),
+        UiIleti::Konusma => {
+            u.yakinlik.konusma(u.duraklatildi);
+            yak_dis(u);
+        }
+        UiIleti::YakinlikIptal => {
+            if u.yakinlik.sayiyor_mu() {
+                gunluk::yaz("yakınlık: sayaç çift alkışla iptal edildi");
+                yak_etkinlik(u);
+            }
+            return !u.kapaniyor;
+        }
         UiIleti::Alkis { olusma } => {
+            // Yakınlık sayacı sürerken alkış komut ÇALIŞTIRMAZ, yalnız sayacı iptal eder.
+            if u.yakinlik.sayiyor_mu() {
+                gunluk::yaz("yakınlık: sayaç alkışla iptal edildi");
+                yak_etkinlik(u);
+                return !u.kapaniyor;
+            }
             match komut_karari(olusma, Instant::now(), u.duraklatildi || u.kapaniyor) {
                 KomutKarari::Bayat => {
                     gunluk::yaz("bayat çift alkış atıldı");
@@ -1921,7 +2036,37 @@ unsafe extern "system" fn pencere_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             guncellemeyi_kur(hwnd);
             LRESULT(0)
         }
+        WM_YAKINLIK_ISCI => {
+            yak(hwnd, |y| y.isci_sonuclari());
+            LRESULT(0)
+        }
+        WM_TIMER if YakinlikYonetici::zamanlayici_mi(wp.0) => {
+            yak(hwnd, |y| y.zamanlayici(wp.0));
+            LRESULT(0)
+        }
+        // Arka plan (INPUTSINK) ham girdisi de DefWindowProc'a gitmeli (sistem temizliği).
+        WM_INPUT => {
+            yak(hwnd, |y| y.ham_girdi(lp));
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
+        WM_DISPLAYCHANGE => {
+            yak(hwnd, |y| y.ekran_degisti());
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
+        // Oyun kolu takıldı/çıkarıldı (ekran kapalıyken kol yoklaması yeniden değerlendirilir).
+        WM_DEVICECHANGE => {
+            yak(hwnd, |y| y.aygit_degisti());
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
+        WM_WTSSESSION_CHANGE => {
+            yak(hwnd, |y| y.oturum_degisti(wp.0));
+            LRESULT(0)
+        }
         WM_POWERBROADCAST => {
+            // Uyku/uyanma: kapalı yakınlık ekranı hemen açılır (kilit ekranında raw input gelmez).
+            if matches!(wp.0 as u32, PBT_APMSUSPEND | PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND) {
+                yak(hwnd, |y| y.zorla_ac());
+            }
             if wp.0 as u32 == PBT_APMRESUMEAUTOMATIC {
                 uyku_donusu(hwnd);
             }
@@ -1998,8 +2143,8 @@ unsafe extern "system" fn pencere_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 // acilsin (sistem dusurulur), sonra efekt ve dinleyici durdurulsun, sonra pencere yok edilsin.
                 // Efekt motoru ve dinleyici BEKLENMEZ (süreç zaten sonlanacak; bloklanmasın).
                 if let Some(u) = uyg(hwnd) {
-                    cikis_hazirla(u);
                     u.oturum_bitiyor = true;
+                    cikis_hazirla(u);
                     u.sistem = None;
                 }
                 let _ = DestroyWindow(hwnd);
@@ -2093,6 +2238,9 @@ pub fn pencere_olustur(u: *mut Uygulama) -> Result<HWND, String> {
         simge_ekle(&mut *u);
         // Simgeden sonra: "kısayol kullanılıyor" balonu gösterilebilsin.
         kisayollari_kaydet(&mut *u);
+        (*u).yakinlik.hedef_ayarla(hwnd);
+        (*u).yakinlik.baslangic(&(*u).ayarlar);
+        yak_dis(&mut *u);
         Ok(hwnd)
     }
 }
@@ -2200,12 +2348,47 @@ mod testler {
         assert!(z.encode_utf16().count() < 128);
     }
 
+    /// Sabit (zamanlı komut dışı) tüm `SetTimer` kimlikleri (yakınlık yöneticisininkiler dahil).
+    fn sabit_kimlikler() -> Vec<usize> {
+        let mut v = vec![
+            ZAMANLAYICI_SURE,
+            SIMGE_ZAMANLAYICI,
+            SAHNE_ZAMANLAYICI,
+            BEKLEYEN_ZAMANLAYICI,
+            GUNCELLEME_ZAMANLAYICI,
+            ZAMANLAYICI_TIK,
+            TUS_PENCERESI_ZAMANLAYICI,
+        ];
+        v.extend_from_slice(&crate::yakinlik_yonetici::ZAMANLAYICILAR);
+        v
+    }
+
+    #[test]
+    fn zamanlayici_kimlikleri_benzersiz() {
+        let k = sabit_kimlikler();
+        for (i, a) in k.iter().enumerate() {
+            for b in &k[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn ileti_numaralari_benzersiz() {
+        let l = [WM_TEPSI, WM_EFEKT_BITTI, WM_SAHNE_ADIMI, WM_AYAR_DEGISTI, WM_IPC_KOMUT, WM_GUNCELLEME, WM_GUNCELLEME_KUR, WM_YAKINLIK_ISCI, WM_DINLEYICI];
+        for (i, a) in l.iter().enumerate() {
+            for b in &l[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
     #[test]
     fn dolum_kimlikleri_aralikta() {
         for k in [1u64, 2, 0xFFF, 0x1000, 0x1001, u64::MAX] {
             let id = dolum_kimligi(k);
             assert!((DOLUM_TABAN..DOLUM_TABAN + DOLUM_ARALIK).contains(&id), "{k}");
-            assert!(![ZAMANLAYICI_SURE, SIMGE_ZAMANLAYICI, SAHNE_ZAMANLAYICI, BEKLEYEN_ZAMANLAYICI, GUNCELLEME_ZAMANLAYICI, ZAMANLAYICI_TIK, TUS_PENCERESI_ZAMANLAYICI].contains(&id));
+            assert!(!sabit_kimlikler().contains(&id));
         }
         assert_eq!(ms(Duration::ZERO), 1);
         assert_eq!(ms(Duration::from_secs(300)), 300_000);

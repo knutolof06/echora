@@ -10,6 +10,7 @@ mod komutlar;
 mod kurulum;
 mod ortak;
 mod sahneler;
+mod yakinlik;
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -28,6 +29,7 @@ pub use guncelleme::GuncellemePaneli;
 pub use kisayollar::KisayollarDurumu;
 pub use komutlar::KomutlarDurumu;
 pub use kurulum::KurulumDurumu;
+pub use yakinlik::YakinlikDurumu;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Bolum {
@@ -36,18 +38,20 @@ enum Bolum {
     Efektler,
     Sahneler,
     Ayarlar,
+    Yakinlik,
     Anlasilmayanlar,
     Kurulum,
     Guncellemeler,
 }
 
 impl Bolum {
-    const HEPSI: [Bolum; 8] = [
+    const HEPSI: [Bolum; 9] = [
         Bolum::Komutlar,
         Bolum::Kisayollar,
         Bolum::Efektler,
         Bolum::Sahneler,
         Bolum::Ayarlar,
+        Bolum::Yakinlik,
         Bolum::Anlasilmayanlar,
         Bolum::Kurulum,
         Bolum::Guncellemeler,
@@ -60,6 +64,7 @@ impl Bolum {
             Bolum::Efektler => "Efektler",
             Bolum::Sahneler => "Sahneler",
             Bolum::Ayarlar => "Ayarlar",
+            Bolum::Yakinlik => "Yakınlık",
             Bolum::Anlasilmayanlar => "Anlaşılmayanlar",
             Bolum::Kurulum => "Kurulum ve izinler",
             Bolum::Guncellemeler => "Güncellemeler",
@@ -73,6 +78,7 @@ impl Bolum {
             Bolum::Efektler => "Komutların ekrandaki görünüşü",
             Bolum::Sahneler => "Tek cümleyle çalışan eylem dizileri",
             Bolum::Ayarlar => "Tetik, mikrofon, ekranlar, başlangıç",
+            Bolum::Yakinlik => "Kimse yokken ekranı kapat",
             Bolum::Anlasilmayanlar => "Eşleşmeyenlerden komut üret",
             Bolum::Kurulum => "Kurulum, mikrofon izni ve testi",
             Bolum::Guncellemeler => "Yeni sürümler ve otomatik denetim",
@@ -157,6 +163,7 @@ pub struct Uygulama {
     pub(crate) anlasilmayanlar: AnlasilmayanDurumu,
     pub(crate) kurulum: KurulumDurumu,
     pub(crate) guncelleme: GuncellemePaneli,
+    pub(crate) yakinlik: YakinlikDurumu,
 }
 
 /// Yazı tiplerini ve görünümü kurar. Segoe UI varsa çalışma zamanında yüklenir (gömülmez);
@@ -228,6 +235,7 @@ impl Uygulama {
             efektler: EfektlerDurumu::default(),
             kurulum: KurulumDurumu::new(&sec.exe_yolu),
             guncelleme: GuncellemePaneli::default(),
+            yakinlik: YakinlikDurumu::default(),
             ayarlar,
             anlasilmayanlar,
             sec,
@@ -549,6 +557,7 @@ impl Uygulama {
                         HataYeri::Uygulama(_) => Some((Bolum::Komutlar, "Uygulamalara git".to_string())),
                         HataYeri::Efekt => Some((Bolum::Efektler, "Efektlere git".to_string())),
                         HataYeri::Kisayol => Some((Bolum::Kisayollar, "Kısayollara git".to_string())),
+                        HataYeri::Yakinlik => Some((Bolum::Yakinlik, "Yakınlığa git".to_string())),
                         HataYeri::Genel => None,
                     };
                     if let Some((bolum, etiket)) = git {
@@ -606,6 +615,7 @@ impl Uygulama {
             }
             "sahneler" => Bolum::Sahneler,
             "ayarlar" => Bolum::Ayarlar,
+            "yakinlik" => Bolum::Yakinlik,
             "anlasilmayanlar" => Bolum::Anlasilmayanlar,
             "kurulum" => Bolum::Kurulum,
             "guncellemeler" => Bolum::Guncellemeler,
@@ -617,6 +627,10 @@ impl Uygulama {
     fn kenar_cubugu(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         for b in Bolum::HEPSI {
+            // Yakınlık yalnız XG27UCDMG bağlıysa listelenir (açıksa bölümde kalınır).
+            if b == Bolum::Yakinlik && !self.yakinlik.listelensin(self.bolum == Bolum::Yakinlik) {
+                continue;
+            }
             let secili = self.bolum == b;
             let yanit = ui.add_sized(
                 [ui.available_width(), 46.0],
@@ -876,6 +890,9 @@ impl eframe::App for Uygulama {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.sozluk_sonucunu_al();
+        if !self.sec.ilk_kurulum {
+            self.yakinlik_yokla(&ctx);
+        }
         self.kapanisi_denetle(&ctx);
         // Tuş yakalanırken Ctrl+S kısayol adayıdır, kayıt değil.
         if self.pencere.is_none() && self.bozuk.is_none() && !self.kisayollar.yakalaniyor()
@@ -927,6 +944,7 @@ impl eframe::App for Uygulama {
                     Bolum::Efektler => self.efektler_bolumu(ui),
                     Bolum::Sahneler => self.sahneler_bolumu(ui),
                     Bolum::Ayarlar => self.ayarlar_bolumu(ui),
+                    Bolum::Yakinlik => self.yakinlik_bolumu(ui),
                     Bolum::Anlasilmayanlar => self.anlasilmayanlar_bolumu(ui),
                     Bolum::Kurulum => self.kurulum_bolumu(ui, false),
                     Bolum::Guncellemeler => self.guncelleme_bolumu(ui),

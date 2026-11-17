@@ -630,6 +630,79 @@ pub struct Ayarlar {
     pub palet_tusu: Option<Kisayol>,
     pub kisayollar: Vec<KisayolTanimi>,
     pub alkis: AlkisAyari,
+    pub yakinlik: YakinlikAyari,
+}
+
+/// `[yakinlik]`: kimse yokken sayaç ve monitörü kapatma (yalnız XG27UCDMG).
+#[derive(Debug, Clone, PartialEq)]
+pub struct YakinlikAyari {
+    pub acik: bool,
+    /// 30-3600 sn: tüm sinyaller bu kadar susunca sayaç başlar.
+    pub bekleme_sn: u32,
+    /// 3-60 sn.
+    pub sayac_sn: u32,
+    pub oyun_kolu: bool,
+    pub mikrofon: bool,
+    pub tam_ekran: bool,
+    pub medya_caliyorken: bool,
+    pub medya_duraklat: bool,
+    pub sensor_izle: bool,
+    pub karsilama: bool,
+    /// `None` = "yok".
+    pub karsilama_efekti: Option<Efekt>,
+}
+
+impl Default for YakinlikAyari {
+    fn default() -> Self {
+        YakinlikAyari {
+            acik: false,
+            bekleme_sn: 120,
+            sayac_sn: 10,
+            oyun_kolu: true,
+            mikrofon: true,
+            tam_ekran: true,
+            medya_caliyorken: false,
+            medya_duraklat: true,
+            sensor_izle: true,
+            karsilama: true,
+            karsilama_efekti: Some(Efekt::Aurora),
+        }
+    }
+}
+
+fn yakinlik_kur(ham: &HamAyarlar) -> Result<YakinlikAyari, String> {
+    let y = &ham.yakinlik;
+    if !(30..=3600).contains(&y.bekleme_sn) {
+        return Err(format!("yakinlik.bekleme_sn 30 ile 3600 arasında olmalı: {}", y.bekleme_sn));
+    }
+    if !(3..=60).contains(&y.sayac_sn) {
+        return Err(format!("yakinlik.sayac_sn 3 ile 60 arasında olmalı: {}", y.sayac_sn));
+    }
+    let ad = y.karsilama_efekti.trim();
+    let karsilama_efekti = if ad == "yok" {
+        None
+    } else {
+        Some(Efekt::anahtardan(ad).ok_or_else(|| {
+            format!(
+                "yakinlik.karsilama_efekti: bilinmeyen efekt \"{}\" (\"yok\" ya da: {})",
+                y.karsilama_efekti,
+                efekt_anahtarlari()
+            )
+        })?)
+    };
+    Ok(YakinlikAyari {
+        acik: y.acik,
+        bekleme_sn: y.bekleme_sn,
+        sayac_sn: y.sayac_sn,
+        oyun_kolu: y.oyun_kolu,
+        mikrofon: y.mikrofon,
+        tam_ekran: y.tam_ekran,
+        medya_caliyorken: y.medya_caliyorken,
+        medya_duraklat: y.medya_duraklat,
+        sensor_izle: y.sensor_izle,
+        karsilama: y.karsilama,
+        karsilama_efekti,
+    })
 }
 
 impl Ayarlar {
@@ -770,6 +843,7 @@ impl Ayarlar {
         let kisayollar = kisayollari_kur(ham, &komutlar)?;
         tus_cakismasi_denetle(&dinleme_tusu, &palet_tusu, &kisayollar)?;
         let alkis = alkis_kur(ham, &komutlar)?;
+        let yakinlik = yakinlik_kur(ham)?;
 
         Ok(Self {
             tetik,
@@ -797,6 +871,7 @@ impl Ayarlar {
             palet_tusu,
             kisayollar,
             alkis,
+            yakinlik,
         })
     }
 }

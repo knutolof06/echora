@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Stroke, Ui};
+use eylemci::EkranBilgisi;
 use komut::efekt::{Efekt, EfektAyari, EfektEkrani};
 use komut::{EfektOrtak, EfektOzel, OlayAyari};
 use sahne::Hedef;
@@ -130,6 +131,19 @@ impl EfektlerDurumu {
         self.secim = Secim::Komut(satir);
         self.kaydir = Some(satir);
         self.zamanlayici.degisti();
+    }
+
+    /// Başka bölümlerden (Yakınlık karşılama önizlemesi): efekti tam ekran oynatır. `ekran` biliniyorsa
+    /// (XG27UCDMG) o monitörde, yoksa ayarın ekranında oynar. Metin, çalışma zamanındaki biçimdedir.
+    pub(crate) fn tam_ekran_oynat(&mut self, ctx: &egui::Context, efekt: Efekt, ayar: EfektAyari, ekran: Option<&EkranBilgisi>) {
+        let hedef = match ekran {
+            Some(e) => Hedef::Dikdortgen { sol: e.sol, ust: e.ust, genislik: e.genislik, yukseklik: e.yukseklik },
+            None => Hedef::Ekran(ayar.ekran),
+        };
+        let uyandir = ctx.clone();
+        self.onizleyici
+            .get_or_insert_with(Onizleyici::new)
+            .oynat(efekt, ayar, Some("Hoş geldin · 12 dk uzaktaydın".to_string()), hedef, move || uyandir.request_repaint());
     }
 
     /// Bölümden çıkarken / kapanırken: mikrofon bırakılır, döngü durur.

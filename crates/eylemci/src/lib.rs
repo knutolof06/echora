@@ -20,6 +20,10 @@ mod surec;
 mod uygulama;
 mod yontem;
 
+pub mod medya;
+pub mod varlik;
+pub mod yakinlik;
+
 pub use ekran::{ddc_guc_durumu, ekran_sec, ekranlari_listele, EkranBilgisi};
 pub use komut::{EkranSecimi, MedyaTusu, YontemTercihi};
 

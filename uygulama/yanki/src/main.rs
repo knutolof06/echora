@@ -19,9 +19,13 @@ mod ipc;
 mod izleyici;
 mod kisayollar;
 mod sahne_akisi;
+mod sayac_penceresi;
 mod sistem;
 mod tepsi;
 mod tus_penceresi;
+mod yakinlik;
+mod yakinlik_isci;
+mod yakinlik_yonetici;
 mod yollar;
 mod zamanlayici;
 
@@ -415,6 +419,7 @@ fn calistir(s: Secenekler, veri_klasoru: PathBuf, guncelleme_klasoru: PathBuf) -
         s.ayar.clone(),
         s.kuru,
         guncelleme_klasoru,
+        yollar::yakinlik_isareti(s.ayar.as_ref().map(|_| veri_klasoru.as_path())),
     ));
 
     let hwnd = tepsi::pencere_olustur(&mut *uygulama)?;
@@ -429,6 +434,7 @@ fn calistir(s: Secenekler, veri_klasoru: PathBuf, guncelleme_klasoru: PathBuf) -
         seviye: uygulama.efekt.seviye_baglantisi(),
         anlasilmayanlar_yolu,
         ddc_kapali: std::sync::Arc::clone(&uygulama.ddc_kapali),
+        yakinlik_sayac: uygulama.yakinlik.sayac_bayragi(),
     }) {
         Ok(kol) => uygulama.kol = Some(kol),
         Err(h) => {

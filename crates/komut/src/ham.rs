@@ -89,6 +89,9 @@ pub struct HamAyarlar {
     /// Çift alkış tetikleyicisi.
     #[serde(default)]
     pub alkis: HamAlkis,
+    /// Yakınlık (kimse yokken ekranı kapatma); yalnız XG27UCDMG.
+    #[serde(default)]
+    pub yakinlik: HamYakinlik,
     /// Efekt anahtarı ("portal") → o efektin ortak ayardan ayrılan alanları (yalnız istisna).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub efektler: BTreeMap<String, EfektOzel>,
@@ -128,6 +131,7 @@ impl Default for HamAyarlar {
             efekt_ortak: EfektOrtak::default(),
             olaylar: HamOlaylar::default(),
             alkis: HamAlkis::default(),
+            yakinlik: HamYakinlik::default(),
             efektler: BTreeMap::new(),
             ekran: Vec::new(),
             uygulama: Vec::new(),
@@ -185,6 +189,45 @@ pub struct HamAlkis {
 impl Default for HamAlkis {
     fn default() -> Self {
         HamAlkis { acik: false, ifade: String::new(), hassasiyet: alkis_hassasiyet_varsayilan() }
+    }
+}
+
+/// `[yakinlik]` tablosu (yalnız ASUS XG27UCDMG): kimse yokken sayaç, sonra monitörü kapatma.
+/// `karsilama_efekti` dosyada efekt adı ya da "yok"tur; doğrulama `Ayarlar::hamdan` içindedir.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct HamYakinlik {
+    pub acik: bool,
+    /// 30-3600: tüm sinyaller bu kadar susunca sayaç başlar.
+    pub bekleme_sn: u32,
+    /// 3-60.
+    pub sayac_sn: u32,
+    pub oyun_kolu: bool,
+    pub mikrofon: bool,
+    pub tam_ekran: bool,
+    pub medya_caliyorken: bool,
+    pub medya_duraklat: bool,
+    pub sensor_izle: bool,
+    pub karsilama: bool,
+    /// Efekt adı ("aurora") ya da "yok".
+    pub karsilama_efekti: String,
+}
+
+impl Default for HamYakinlik {
+    fn default() -> Self {
+        HamYakinlik {
+            acik: false,
+            bekleme_sn: 120,
+            sayac_sn: 10,
+            oyun_kolu: true,
+            mikrofon: true,
+            tam_ekran: true,
+            medya_caliyorken: false,
+            medya_duraklat: true,
+            sensor_izle: true,
+            karsilama: true,
+            karsilama_efekti: "aurora".to_string(),
+        }
     }
 }
 

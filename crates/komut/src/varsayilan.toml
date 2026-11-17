@@ -179,6 +179,31 @@ acik = false
 ifade = "ekranları kapat"
 hassasiyet = 0.6
 
+# Yakınlık (yalnız ASUS XG27UCDMG): kimse yokken köşede sayaç çıkar, süre bitince monitör
+# kapanır; klavye/fare/oyun kolu ile geri açılır. Varsayılan kapalı.
+#   bekleme_sn       : 30-3600; tüm sinyaller bu kadar susunca sayaç başlar.
+#   sayac_sn         : 3-60; geri sayım süresi.
+#   oyun_kolu, mikrofon, tam_ekran : "burada" sayılacak sinyaller (tam_ekran: tam ekran
+#                      uygulama varken sayaç başlamaz).
+#   medya_caliyorken : true ise medya çalarken sayaç başlamaz.
+#   medya_duraklat   : kapanırken çalan medya duraklatılır, dönüşte sürdürülür.
+#   sensor_izle      : monitörün kendi karartmasını izleyip tam kapatır.
+#   karsilama        : dönüşte karşılama efekti ve yazısı.
+#   karsilama_efekti : efekt adı ya da "yok".
+
+[yakinlik]
+acik = false
+bekleme_sn = 120
+sayac_sn = 10
+oyun_kolu = true
+mikrofon = true
+tam_ekran = true
+medya_caliyorken = false
+medya_duraklat = true
+sensor_izle = true
+karsilama = true
+karsilama_efekti = "aurora"
+
 # Ekran ipucu ayarları (isteğe bağlı). Aşağıdakiler varsayılan renk ön tanımlarıdır;
 # silerseniz ön tanım kullanılır.
 

@@ -3,6 +3,16 @@
 Her sürüm için bir `## vX.Y.Z` bölümü; sürüm hattı (`.github/workflows/surum.yml`) GitHub
 Release notunu buradan alır.
 
+## v0.3.0
+
+- **Yakınlık (yalnız ASUS ROG Strix OLED XG27UCDMG):** kimse yokken monitörün sağ alt köşesinde
+  10 saniyelik sayaç çıkar, ardından yalnız bu monitör gerçekten kapanır ve çalan medya duraklar.
+  Fare, tuş, konuşma ya da çift alkış sayacı iptal eder; dönüşte monitör açılır, medya sürer ve
+  karşılama efekti oynar. Varsayılan kapalı: Stüdyo > Yakınlık ya da tepsi menüsünden açın.
+- **Monitörün sensörü Stüdyo'dan:** yakınlık sensörünün mesafesi ve süresi monitör menüsüne girmeden
+  ayarlanır.
+- Mesafe göstergesi yoktur: monitör ölçtüğü mesafeyi dışarı vermiyor.
+
 ## v0.2.0
 
 - **Tek dosyalık kurulum:** artık `Echora-Kurulum-X.Y.Z.exe`'yi indirip çalıştırmanız yeterli;

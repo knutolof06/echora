@@ -179,6 +179,31 @@ beklenir. Açık olduğunda mikrofon sesi ek olarak alkış için çok hafif bir
 dinleme kipinde de çalışır: ayrı ve açıkça açılan bir tetiktir. Yanlış algılama olasılığına karşı
 alkışa riskli bir komut (ekran kapatma gibi) bağlamadan önce "Mikrofonla dene" ile odanızda sınayın.
 
+### Yakınlık (yalnız ASUS ROG Strix OLED XG27UCDMG, varsayılan kapalı)
+Bu monitör bağlıysa Stüdyo'da **Yakınlık** bölümü ve tepsi menüsünde **Yakınlık** anahtarı görünür
+(başka monitörlerde özellik yoktur; monitör EDID kimliği `AUS27F6` ile tanınır).
+
+- **Kimse yokken:** klavye, fare, oyun kolu, mikrofondaki konuşma ve tam ekran uygulama belirlediğiniz
+  süre boyunca (varsayılan 2 dk) susarsa monitörün sağ alt köşesinde 10 saniyelik sayaç çıkar. Sayaç
+  bitince çalan medya duraklatılır ve **yalnız bu monitör** DDC/CI ile gerçekten kapatılır (perde değil;
+  diğer monitörler ve pencereler yerinde kalır).
+- **Sayacı iptal:** fareyi oynatın, bir tuşa basın, konuşun ya da iki kez alkışlayın (alkış özelliği
+  kapalı olsa da sayaç sürerken çalışır).
+- **Dönüş:** bir tuşa basmak, fareyi oynatmak ya da oyun kolu monitörü açar (~1 sn); Echora'nın
+  duraklattığı medya sürer, seçtiğiniz karşılama efekti oynar ve köşede "Hoş geldin · 12 dk
+  uzaktaydın" yazar. Monitör kendi sensörüyle kendiliğinden açılmaz.
+- **Monitörün kendi sensörü:** Stüdyo'daki "Monitörün sensörü" kartı mesafeyi (60/90/120 cm, kapalı)
+  ve süreyi (5/10/15 dk) doğrudan monitöre yazar (Kaydet gerekmez; "Özel" mesafe yalnız gösterilir).
+  Sensör en erken 5 dakikada ekranı karartır; "sensör izleme" açıksa Echora bu karartmayı görünce
+  monitörü tamamen kapatır.
+
+Sınırlar: monitör ölçtüğü **mesafeyi dışarı vermez**, bu yüzden mesafe göstergesi yoktur; kamera
+kullanılmaz. Algı "hareketsiz ve sessiz = yok" tahminidir: tam ekran olmayan bir videoyu kıpırdamadan
+izlerken sayaç başlayabilir (fareyi oynatmak iptal eder; "medya çalarken sayma" anahtarı bunun içindir).
+Odadaki TV ya da hoparlör sesi mikrofonda konuşma sayılıp sayacı geciktirebilir. Sayaç ve kapalı
+ekran sırasında Echora yalnız "bir girdi oldu mu" bilgisini alır (ham girdi); tuşların içeriği okunmaz
+ve kaydedilmez. Echora monitörü kapalıyken kapanır ya da çökerse, bir sonraki açılışta monitörü açar.
+
 ### Kolay efekt seçimi
 **Stüdyo > Efektler > Komut efektleri** sekmesinde her komutun yanında efekt açılır listesi ve
 **önizle** düğmesi vardır ("Eyleme göre" seçeneği eylem türüne uygun varsayılanı kullanır); üstteki
@@ -254,6 +279,8 @@ Tam ekran bir uygulama (oyun, sunum) öndeyken ya da sessiz saatlerde konuşmala
 - "Anlaşılmayanları kaydet" açıksa eşleşmeyen konuşmaların metni `%LOCALAPPDATA%\Echora\anlasilmayanlar.txt`
   dosyasında (son 50 satır) tutulur.
 - Mikrofon gizlilik ayarı yalnız okunur; Echora Windows ayarlarını değiştirmez.
+- Yakınlık açıkken sayaç ve kapalı ekran sırasında klavye/fare ham girdisi yalnız "girdi oldu" bilgisi
+  için dinlenir; tuş içeriği okunmaz, saklanmaz. Kamera kullanılmaz.
 
 ## Dosyalar
 

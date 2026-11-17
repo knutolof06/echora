@@ -6,6 +6,8 @@
 //! - `dwData = YENIDEN_YUKLE` (2): ayar dosyasını yeniden yükle; `cbData = 0`, `lpData` boş.
 //! - `dwData = GUNCELLEME_DENETLE` (3): güncellemeleri şimdi denetle; veri yok.
 //! - `dwData = GUNCELLEME_KUR` (4): hazır güncellemeyi kur (onayı arka plan kendi kutusunda sorar); veri yok.
+//! - `dwData = YAKINLIK_ONIZLE` (5): yakınlık sayacını XG27UCDMG köşesinde önizle; monitör KAPATILMAZ,
+//!   medya duraklatılmaz; veri yok. XG27UCDMG bağlı değilse reddedilir (0).
 //!
 //! Alıcı iletiyi kabul ederse 1 (TRUE), reddederse (ör. ifade hiçbir komutla eşleşmedi) 0 döner.
 //!
@@ -50,6 +52,8 @@ pub const GUNCELLEME_DENETLE: usize = 3;
 /// bir güven kapısı sayılmaz); hazır güncelleme yoksa ya da uygulama kurulu konumdan çalışmıyorsa
 /// reddedilir (0).
 pub const GUNCELLEME_KUR: usize = 4;
+/// Veri yok. Arka plan yakınlık sayacını önizler (monitör kapatılmaz, medya duraklatılmaz).
+pub const YAKINLIK_ONIZLE: usize = 5;
 /// Yanıt beklenecek en uzun süre.
 pub const ZAMAN_ASIMI_MS: u32 = 2000;
 
@@ -201,6 +205,11 @@ pub fn guncelleme_denetle() -> Result<(), IpcHatasi> {
 /// sürümle yeniden açılır.
 pub fn guncellemeyi_kur() -> Result<(), IpcHatasi> {
     gonder(GUNCELLEME_KUR, &[])
+}
+
+/// Arka plana yakınlık sayacını önizletir.
+pub fn yakinlik_onizle() -> Result<(), IpcHatasi> {
+    gonder(YAKINLIK_ONIZLE, &[])
 }
 
 #[cfg(test)]

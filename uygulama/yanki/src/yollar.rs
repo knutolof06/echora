@@ -45,6 +45,7 @@ pub fn varsayilan_veri_klasoru() -> PathBuf {
 }
 
 const ANLASILMAYANLAR: &str = "anlasilmayanlar.txt";
+const YAKINLIK_ISARETI: &str = "yakinlik-kapatti";
 
 /// Uygulamanın eski adıyla veri klasörü adı.
 const ESKI_AD: &str = "Yanki";
@@ -95,6 +96,15 @@ pub fn anlasilmayanlar_yolu(test_klasoru: Option<&Path>) -> PathBuf {
 /// Önceki sürümün `%APPDATA%\Echora\anlasilmayanlar.txt` yolu (ilk açılışta silinir).
 pub fn eski_anlasilmayanlar_yolu() -> PathBuf {
     varsayilan_veri_klasoru().join(ANLASILMAYANLAR)
+}
+
+/// Yakınlık kurtarma işareti: Echora monitörü kapatmadan önce yazılır, açınca silinir; açılışta
+/// varsa monitör açılır. `%LOCALAPPDATA%\Echora` altında; `--ayar` verilmişse (`test_klasoru`) o klasörde.
+pub fn yakinlik_isareti(test_klasoru: Option<&Path>) -> PathBuf {
+    match test_klasoru {
+        Some(k) => k.join(YAKINLIK_ISARETI),
+        None => yerel_veri_klasoru().join(YAKINLIK_ISARETI),
+    }
 }
 
 /// Ayar dosyasının yanındaki "son geçerli" kopyanın yolu.
@@ -248,6 +258,12 @@ mod testler {
                 assert!(eski_anlasilmayanlar_yolu().starts_with(PathBuf::from(r)));
             }
         }
+    }
+
+    #[test]
+    fn yakinlik_isareti_yerel_profilde_ya_da_test_klasorunde() {
+        assert_eq!(yakinlik_isareti(Some(Path::new(r"C:\x"))), PathBuf::from(r"C:\x\yakinlik-kapatti"));
+        assert!(yakinlik_isareti(None).ends_with(r"Echora\yakinlik-kapatti"));
     }
 
     #[test]

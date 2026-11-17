@@ -826,6 +826,14 @@ fn el_yapimi_ham() -> HamAyarlar {
         dinleme_suresi_sn: 10,
         palet_tusu: Some("ctrl+alt+p".into()),
         alkis: crate::HamAlkis { acik: true, ifade: "sesi aç".into(), hassasiyet: 0.4 },
+        yakinlik: crate::HamYakinlik {
+            acik: true,
+            bekleme_sn: 900,
+            sayac_sn: 15,
+            medya_caliyorken: true,
+            karsilama_efekti: "yok".into(),
+            ..Default::default()
+        },
         efektler_acik: true,
         olay_efektleri_acik: false,
         guncelleme_otomatik: false,

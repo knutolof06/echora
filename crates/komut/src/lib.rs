@@ -17,6 +17,8 @@ mod saat;
 mod sema_testler;
 #[cfg(test)]
 mod v02_testler;
+#[cfg(test)]
+mod yakinlik_testler;
 mod sayi;
 mod turler;
 
@@ -24,11 +26,12 @@ pub use turler::{DinlemeKipi, EkranSecimi, MedyaTusu, YontemTercihi};
 
 pub use ayar::{
     adim_alanlari, efekt_varsayilani, eylem_adlari, eylem_alanlari, Adim, Ayarlar, EfektKipi, Eylem,
-    Komut, OlayAyari, OlayEfektleri, SahneTanimi,
+    Komut, OlayAyari, OlayEfektleri, SahneTanimi, YakinlikAyari,
 };
 pub use esleme::Eslesme;
 pub use ham::{
     HamAdim, HamAlkis, HamAyarlar, HamEkran, HamKisayol, HamKomut, HamOlaylar, HamSahne, HamUygulama,
+    HamYakinlik,
 };
 pub use kisayol::{
     kisayol_coz, AlkisAyari, Kisayol, KisayolTanimi, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN,
